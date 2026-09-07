@@ -58,30 +58,118 @@ Limitations that must be displayed plainly in the UI:
   development, but must not become application dependencies. Do not install
   packages or introduce a server to evade these constraints.
 
-## State machine (authoritative summary)
+## State machine (authoritative — agreed at Gate 3A)
 
 States: `needs_review`, `provisional_approval`, `binding`, `declined`,
 `deferred`, `delegation_pending`, `delegation_confirmed`.
 
-- Only `provisional_approval` and `binding` reserve leader minutes; every other
-  state reserves zero.
-- Capacity is computed from **current active reservations**, never from summed
-  historical approvals.
-- Each batch starts with **120 minutes remaining after fixed commitments**.
-  Fixed commitments provide context and must not be deducted again.
-- Provisional-to-binding conversion preserves the same reservation (no double
-  reserve). Withdrawing provisional approval releases its reservation
-  explicitly and records why.
-- Changing a binding duration or releasing a binding reservation requires an
-  explicit simulated leader-approved amendment plus a reason. Ordinary edits
-  must not do it silently.
-- Reporting an existing off-record promise succeeds even into deficit, and is
-  distinct from making a new approval. If it corresponds to an existing
-  provisional reservation, convert/link it rather than reserve twice.
-- A deficit blocks new or increased reservations. Explicit reconciliation can
-  reduce/release reservations; other non-reserving actions remain usable.
-- A stable per-action submission ID makes repeated submission idempotent.
-  Different legitimate requests must not be merged because their text matches.
+**Reservation effect of each state — this is the whole of it:**
+
+| State | Reserves leader minutes |
+|---|---|
+| `provisional_approval` | **Yes**, the recorded duration |
+| `binding` | **Yes**, the recorded duration |
+| `needs_review`, `declined`, `deferred`, `delegation_pending`, `delegation_confirmed` | **Zero** |
+
+Capacity is computed from **current active reservations only**, never from
+summed historical approvals. Each batch starts with **120 minutes remaining
+after fixed commitments**; those commitments are context and are never
+deducted again.
+
+### Gate tokens used in the table
+
+| Token | Requirement |
+|---|---|
+| **R** | A reason is required. Trimmed non-empty. Every transition needs one |
+| **CAP** | Capacity check on the **increase only** (`new − currently held`). An increase must fit the remaining minutes. Blocked while the batch is in deficit |
+| **REL** | Releases the outgoing reservation **explicitly**. The minutes released and the reason are recorded on the decision and in history |
+| **KEEP** | Carries the existing reservation across **unchanged**. No new capacity check, and it can never reserve twice. Duration is locked during the move |
+| **AMEND** | An explicit simulated leader-approved amendment: approver name, approver role and a separate amendment reason. **An ordinary edit can never satisfy this** |
+| **OWN** | Owner and review date required |
+| **ACK** | Explicit acknowledgement required: who acknowledged, and when |
+
+### Allowed transitions
+
+Rows are the current state, columns the target. `✕` means the move is not
+allowed at all.
+
+| from ↓ / to → | needs_review | provisional_approval | binding | declined | deferred | delegation_pending | delegation_confirmed |
+|---|---|---|---|---|---|---|---|
+| **needs_review** | ✕ | R + CAP | R + CAP | R | R + OWN | R + OWN | ✕ |
+| **provisional_approval** | R + REL | R + CAP *(increase)* / REL *(decrease)* | **R + KEEP** | R + REL | R + OWN + REL | R + OWN + REL | ✕ |
+| **binding** | R + AMEND + REL | R + AMEND + KEEP | R + AMEND + CAP *(increase)* / REL *(decrease)* | R + AMEND + REL | R + AMEND + OWN + REL | R + AMEND + OWN + REL | ✕ |
+| **declined** | R | R + CAP | R + CAP | ✕ | R + OWN | R + OWN | ✕ |
+| **deferred** | R | R + CAP | R + CAP | R | R + OWN *(change owner or date)* | R + OWN | ✕ |
+| **delegation_pending** | R | R + CAP | R + CAP | R | R + OWN | R + OWN *(reassign or change date)* | **R + ACK** |
+| **delegation_confirmed** | R | R + CAP | R + CAP | R | R + OWN | R + OWN *(re-delegate)* | ✕ |
+
+Notes on specific cells:
+
+- **`provisional_approval` → `binding` is the conversion.** It preserves the
+  same reservation, so the duration field is locked during the move and no
+  capacity is consumed a second time. To change the duration, amend the
+  provisional first, then convert.
+- **Nothing may enter `delegation_confirmed` except from `delegation_pending`.**
+  Confirmation must follow a real acknowledgement, so there is no shortcut.
+- **Every route out of `binding` carries AMEND**, because every such route
+  either changes the binding duration or releases its reservation.
+- **`declined` → `declined` is not offered.** There is nothing to amend but the
+  reason, and reasons are part of the frozen record behind a decision.
+
+### The off-record promise (a report, not an approval)
+
+"Report off-record promise" records something the leader **already promised
+outside this desk**. It is not a decision on a request and is labelled
+distinctly in history. It collects: promise identifier, description, minutes,
+reported-by role, and optionally a linked request.
+
+- **It is never blocked by capacity, and succeeds into deficit.** It records
+  what already happened; it does not ask for new time.
+- **Unlinked promise** — reserves its own minutes directly against the batch.
+- **Linked promise** — converts the linked request to `binding` at the
+  promise's minutes, and the promise itself then contributes **zero** to
+  capacity. This is the "convert or link, never reserve twice" rule:
+  - linked request held a provisional reservation of the same minutes → net
+    capacity change is **zero**;
+  - linked request held no reservation → the request now reserves the
+    promise's minutes, and the batch may go into deficit;
+  - linked request is **already `binding`** → **refused.** Changing a binding
+    duration requires the AMEND path, and reporting must not become a way
+    around it.
+- A promise may later be **released** (marked inactive) with a reason, which
+  frees its minutes. This is how a deficit caused by an unlinked promise is
+  reconciled.
+
+### Deficit
+
+A batch is in deficit when reserved minutes exceed 120.
+
+- **Blocked while in deficit:** any transition whose reservation increase is
+  above zero — that is every `CAP` cell, and any amendment that raises a
+  duration.
+- **Still usable in deficit:** every zero-reserving transition, every release
+  or reduction, reporting an off-record promise, and releasing a promise.
+- **Reconciliation is explicit.** Reducing or releasing a reservation is done
+  through the ordinary transitions above, with their gates intact: a provisional
+  release needs its reason, a binding change still needs its leader-approved
+  amendment. There is no bulk "fix capacity" action.
+
+### Priority versions and strategic exceptions
+
+- Every decision records the **priority version in force** at the time.
+- A **routine amendment is not a policy change** and never creates a version.
+- A **strategic exception** is recorded on the decision itself, as a separate
+  flagged explanation. It does not create a version either.
+- **Only an explicit human policy change** — a person deliberately recording a
+  new priority version and its summary — creates a new `priority_versions`
+  entry. No decision, amendment or exception may do this as a side effect.
+
+### Idempotency
+
+Every action carries a **stable submission ID generated when its form is
+opened**, not derived from its content. Re-submitting the same ID is a no-op
+that reports "already recorded". Because IDs are per form instance, two
+different legitimate requests are never merged just because their text matches.
 
 ## Evidence rules
 
