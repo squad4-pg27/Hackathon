@@ -1,0 +1,7 @@
+commitment_id,batch,minutes,description,binding
+CM001,A,180,"Weekly leadership staff meeting, recurring. Already deducted, context only.",TRUE
+CM002,A,60,"Board pre-read review block. Already deducted, context only.",TRUE
+CM003,A,45,"Customer escalation standing slot, held but not contractually fixed. Already deducted, context only.",FALSE
+CM004,B,180,"Weekly leadership staff meeting, recurring. Already deducted, context only.",TRUE
+CM005,B,90,"Quarterly planning session. Already deducted, context only.",TRUE
+CM006,B,30,"Hiring panel debrief, moveable. Already deducted, context only.",FALSE
