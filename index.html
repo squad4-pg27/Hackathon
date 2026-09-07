@@ -169,6 +169,11 @@
     </section>
   </main>
 
+  <details class="sec" id="secUnresolved" open>
+    <summary>Unresolved and overdue work</summary>
+    <div class="secbody" id="unresolvedBody"></div>
+  </details>
+
   <details class="sec" id="secReserve">
     <summary>Current reservations and reconciliation</summary>
     <div class="secbody" id="reserveBody"></div>
@@ -1240,9 +1245,9 @@ function resolveIdentity(state, runId, request){
   }
   if (manual && manual.contactId){
     return { status: 'established', source: 'confirmed by a human on ' + fmtStamp(manual.at) + ' — basis: ' + manual.basis,
-             contactId: manual.contactId, candidates: hints.candidates, accountHints: hints.accountHints };
+             contactId: manual.contactId, manual: manual, candidates: hints.candidates, accountHints: hints.accountHints };
   }
-  return { status: 'unresolved', source: null, contactId: null,
+  return { status: 'unresolved', source: null, contactId: null, manual: manual || null,
            candidates: hints.candidates, accountHints: hints.accountHints };
 }
 
@@ -1426,6 +1431,9 @@ function validateDecision(state, runId, proposal){
     if (isBlank(proposal.amendApproverRole)) errors.push({ field:'amendApproverRole', message:'Record the role of the person who approved the amendment.' });
     if (isBlank(proposal.amendReason)) errors.push({ field:'amendReason', message:'Record why the amendment was approved. This is separate from the decision reason.' });
   }
+  if (proposal.needsClarification && isBlank(proposal.clarification)){
+    errors.push({ field:'clarification', message:'Write the clarification question you need answered.' });
+  }
   if (proposal.exception && isBlank(proposal.exceptionReason)){
     errors.push({ field:'exceptionReason', message:'Explain the strategic exception you are recording.' });
   }
@@ -1502,7 +1510,8 @@ function applyDecision(state, runId, proposal){
       reason: String(proposal.amendReason).trim(),
       simulated: true
     } : null,
-    exception: proposal.exception ? { explanation:String(proposal.exceptionReason).trim() } : null
+    exception: proposal.exception ? { explanation:String(proposal.exceptionReason).trim() } : null,
+    clarification: proposal.needsClarification ? { question:String(proposal.clarification).trim(), answered:false } : null
   };
   run.decisions[proposal.requestId] = decision;
   run.history.push({
@@ -1511,7 +1520,7 @@ function applyDecision(state, runId, proposal){
     from: from, to: decision.state, minutes: decision.minutes, releasedMinutes: released,
     carried: !!gate.keep, reason: decision.reason, actorRole: decision.actorRole,
     decisionId: decision.decisionId, amendment: decision.amendment, owner: decision.owner,
-    acknowledgement: decision.acknowledgement, exception: decision.exception
+    acknowledgement: decision.acknowledgement, exception: decision.exception, clarification: decision.clarification
   });
   state.updatedAt = nowIso();
   return { ok:true, idempotent:false, errors:[], decision:decision, released:released, carried:!!gate.keep };
@@ -1667,6 +1676,132 @@ function recordPolicyVersion(state, p){
     detail: 'Priority version ' + version + ' recorded by ' + (p.actorRole || 'unspecified') + '.' });
   state.updatedAt = nowIso();
   return { ok:true, errors:[] };
+}
+
+/* ---------- 5d. Human identity confirmation ------------------------- */
+/* Nothing here matches automatically. A person picks a candidate and
+   records why, or records that it cannot be resolved. Confirming who
+   someone is does not verify anything they claim. */
+function confirmIdentity(state, runId, p){
+  var run = getRun(state, runId);
+  if (p.submissionId){
+    for (var i = 0; i < run.history.length; i++) if (run.history[i].submissionId === p.submissionId) return { ok:true, idempotent:true, errors:[] };
+  }
+  var errors = [];
+  var request = getRequestById(state, p.requestId);
+  if (!request) return { ok:false, idempotent:false, errors:[{ field:'requestId', message:'That request is not in the current records.' }] };
+  if (request.contact_id) errors.push({ field:'requestId', message:'This request already carries an established identifier, so there is nothing to confirm.' });
+  if (isBlank(p.basis)) errors.push({ field:'basis', message:'Record the basis for this. What did you check, and how do you know?' });
+  var contactId = p.contactId || null;
+  if (contactId && !getContactById(state, contactId)) errors.push({ field:'contactId', message:'That contact is not in the current records.' });
+  if (!contactId && !p.recordUnresolved) errors.push({ field:'contactId', message:'Choose the person, or record that the identity cannot be resolved.' });
+  if (errors.length) return { ok:false, idempotent:false, errors:errors };
+
+  var record = {
+    contactId: contactId,
+    recordedUnresolved: !contactId,
+    basis: String(p.basis).trim(),
+    at: nowIso(),
+    actorRole: p.actorRole || 'unspecified'
+  };
+  run.identityResolutions[p.requestId] = record;
+  run.history.push({
+    eventId: uid('EV'), at: record.at, type:'identity_recorded',
+    submissionId: p.submissionId || uid('SUB'), runId: run.runId, requestId: p.requestId,
+    reason: record.basis, actorRole: record.actorRole,
+    detail: contactId ? 'Confirmed as ' + contactId : 'Recorded as unresolvable'
+  });
+  state.updatedAt = nowIso();
+  return { ok:true, idempotent:false, errors:[], record:record };
+}
+
+/* ---------- 5e. Reviewer-recorded conflicts and unknowns ------------- */
+/* The source data only tags the conflicts it was annotated with.
+   A reviewer can record one the data does not carry. */
+function addReviewerFlag(state, runId, p){
+  var run = getRun(state, runId);
+  if (p.submissionId){
+    for (var i = 0; i < run.history.length; i++) if (run.history[i].submissionId === p.submissionId) return { ok:true, idempotent:true, errors:[] };
+  }
+  var errors = [];
+  if (!getRequestById(state, p.requestId)) errors.push({ field:'requestId', message:'That request is not in the current records.' });
+  if (p.kind !== 'conflict' && p.kind !== 'unknown') errors.push({ field:'kind', message:'Choose whether this is a conflict between records or something the records do not answer.' });
+  if (isBlank(p.text)) errors.push({ field:'text', message:'Describe it in your own words.' });
+  if (errors.length) return { ok:false, idempotent:false, errors:errors };
+  if (!run.reviewerFlags[p.requestId]) run.reviewerFlags[p.requestId] = [];
+  var flag = { flagId: uid('FLAG'), kind:p.kind, text:String(p.text).trim(), at:nowIso(), actorRole:p.actorRole || 'unspecified' };
+  run.reviewerFlags[p.requestId].push(flag);
+  run.history.push({
+    eventId: uid('EV'), at: flag.at, type:'reviewer_flag_recorded',
+    submissionId: p.submissionId || uid('SUB'), runId: run.runId, requestId: p.requestId,
+    reason: flag.text, actorRole: flag.actorRole,
+    detail: flag.kind === 'conflict' ? 'Conflict recorded by the reviewer' : 'Unknown recorded by the reviewer'
+  });
+  state.updatedAt = nowIso();
+  return { ok:true, idempotent:false, errors:[], flag:flag };
+}
+function getReviewerFlags(state, runId, requestId){
+  var run = getRun(state, runId);
+  return (run.reviewerFlags && run.reviewerFlags[requestId]) || [];
+}
+
+/* ---------- 5f. Later outcomes -------------------------------------- */
+/* A plain record of what happened afterwards, tied to the decision it
+   follows. It never alters the decision or the inputs behind it, and no
+   analysis is produced from it. */
+function addOutcome(state, runId, p){
+  var run = getRun(state, runId);
+  if (p.submissionId){
+    for (var i = 0; i < run.outcomes.length; i++) if (run.outcomes[i].submissionId === p.submissionId) return { ok:true, idempotent:true, errors:[] };
+  }
+  var errors = [];
+  var found = null, rid;
+  for (rid in run.decisions) if (run.decisions[rid].decisionId === p.decisionId) found = run.decisions[rid];
+  if (!found) errors.push({ field:'decisionId', message:'That decision is not in this run.' });
+  if (isBlank(p.text)) errors.push({ field:'text', message:'Describe what happened.' });
+  if (p.availableOriginally !== true && p.availableOriginally !== false){
+    errors.push({ field:'availableOriginally', message:'Say whether this was knowable at the time or is newly learned. That distinction is the whole point of recording it.' });
+  }
+  if (errors.length) return { ok:false, idempotent:false, errors:errors };
+  var outcome = {
+    outcomeId: uid('OUT'), submissionId: p.submissionId || uid('SUB'),
+    decisionId: p.decisionId, requestId: found.requestId,
+    text: String(p.text).trim(), availableOriginally: p.availableOriginally,
+    at: nowIso(), actorRole: p.actorRole || 'unspecified'
+  };
+  run.outcomes.push(outcome);
+  state.updatedAt = nowIso();
+  return { ok:true, idempotent:false, errors:[], outcome:outcome };
+}
+function getOutcomesForDecision(state, runId, decisionId){
+  var run = getRun(state, runId), out = [];
+  for (var i = 0; i < run.outcomes.length; i++) if (run.outcomes[i].decisionId === decisionId) out.push(run.outcomes[i]);
+  return out;
+}
+
+/* ---------- 5g. Unresolved and overdue work -------------------------- */
+function todayIso(){
+  var d = new Date();
+  return d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0') + '-' + String(d.getDate()).padStart(2,'0');
+}
+var UNRESOLVED_STATES = { deferred:1, delegation_pending:1 };
+function getUnresolvedWork(state, runId){
+  var run = getRun(state, runId), out = [], rid;
+  for (rid in run.decisions){
+    var d = run.decisions[rid];
+    if (!UNRESOLVED_STATES[d.state]) continue;
+    var due = d.owner ? d.owner.reviewDate : null;
+    out.push({
+      requestId: d.requestId, batch: d.batch, state: d.state,
+      owner: d.owner ? d.owner.name : 'not recorded',
+      reviewDate: due,
+      overdue: !!(due && due < todayIso()),
+      daysOverdue: due && due < todayIso()
+        ? Math.round((new Date(todayIso()+'T00:00:00Z') - new Date(due+'T00:00:00Z')) / 86400000) : 0
+    });
+  }
+  out.sort(function(a,b){ return (a.reviewDate || '9999') < (b.reviewDate || '9999') ? -1 : 1; });
+  return out;
 }
 
 /* ---------- 6. CSV parsing and dataset validation -------------------- */
@@ -1959,6 +2094,8 @@ function createRun(runId, label){
     decisions: {},              /* requestId -> current decision record */
     offRecordPromises: [],      /* filled by Step 3B */
     identityResolutions: {},    /* requestId -> { contactId, basis, at } */
+    reviewerFlags: {},          /* requestId -> [ { kind, text, at } ] recorded by the reviewer */
+    outcomes: [],               /* later-outcome entries tied to a decision */
     briefs: {},                 /* requestId -> brief record (Step 5) */
     released: { A:false, B:false },
     history: []                 /* append-only, per run */
@@ -1995,6 +2132,22 @@ function validateStoredState(s){
   if (!s.runs || !Object.keys(s.runs || {}).length) errors.push('Stored value has no runs.');
   if (!Array.isArray(s.history)) errors.push('Stored value has no history.');
   return errors;
+}
+/* Fills in fields added after a state was saved, so older saved work and
+   older backups still open. Nothing existing is altered. */
+function normaliseState(state){
+  if (!state || !state.runs) return state;
+  if (!state.policyVersions) state.policyVersions = [];
+  for (var runId in state.runs){
+    var run = state.runs[runId];
+    if (!run.reviewerFlags) run.reviewerFlags = {};
+    if (!run.outcomes) run.outcomes = [];
+    if (!run.identityResolutions) run.identityResolutions = {};
+    if (!run.briefs) run.briefs = {};
+    if (!run.offRecordPromises) run.offRecordPromises = [];
+    if (!run.released) run.released = { A:false, B:false };
+  }
+  return state;
 }
 function makeBackup(state){
   return { format: BACKUP_FORMAT, schemaVersion: SCHEMA_VERSION, exportedAt: nowIso(), state: deepClone(state) };
@@ -2066,7 +2219,7 @@ function loadAtStart(){
     return;
   }
   /* Valid existing work is restored, never silently replaced by fixtures. */
-  App.state = parsed;
+  App.state = normaliseState(parsed);
   App.saveState = 'saved';
   App.saveMessage = 'Restored work saved at ' + fmtStamp(parsed.updatedAt) + '.';
 }
@@ -2081,6 +2234,7 @@ function render(){
   renderRequestList();
   renderEvidence();
   renderDecisionForm();
+  renderUnresolved();
   renderReservations();
   renderPromisePanel();
   renderPolicyPanel();
@@ -2202,9 +2356,16 @@ function renderRequestList(){
       b.appendChild(el('span', 'rid', r.request_id + ' · arrived ' + fmtDate(r.arrival)));
       b.appendChild(el('span', 'rname', r.requester_name));
       b.appendChild(el('span', 'rmeta', (r.org || 'organisation not stated') + ' — asks ' + r.minutes_requested + ' min, by ' + r.deadline));
-      var cls = st === 'provisional_approval' ? 'badge prov' : st === 'declined' ? 'badge dec' : 'badge';
+      var cls = (st === 'provisional_approval' || st === 'binding') ? 'badge prov' : st === 'declined' ? 'badge dec' : 'badge';
       var d = getRun(App.state, runId).decisions[r.request_id];
       b.appendChild(el('span', cls, STATES[st].label + (d && d.minutes ? ' · ' + d.minutes + ' min reserved' : '')));
+      if (d && UNRESOLVED_STATES[d.state]){
+        var due = d.owner ? d.owner.reviewDate : null;
+        var over = due && due < todayIso();
+        var ub = el('span', 'badge' + (over ? '' : ''), over ? 'OVERDUE since ' + due : 'unresolved, review by ' + (due || 'no date'));
+        if (over){ ub.style.background = 'var(--stop-bg)'; ub.style.borderColor = 'var(--stop-line)'; ub.style.color = 'var(--stop-ink)'; }
+        b.appendChild(ub);
+      }
       b.addEventListener('click', function(){ selectRequest(r.request_id); });
       li.appendChild(b);
       host.appendChild(li);
@@ -2231,6 +2392,114 @@ function evidenceSection(title, hint){
   wrap.appendChild(el('h4', null, title));
   if (hint) wrap.appendChild(el('p', 'small muted', hint));
   return wrap;
+}
+
+/* Identity is confirmed by a person, with a basis, or explicitly recorded
+   as unresolvable. Nothing is matched automatically. */
+function renderIdentityForm(host, request, identity){
+  if (!App.identityDraft || App.identityDraft.requestId !== request.request_id){
+    App.identityDraft = { requestId:request.request_id, submissionId:uid('SUB'), contactId:'', unresolved:false, basis:'', errors:[] };
+  }
+  var d = App.identityDraft;
+  var wrap = el('div');
+  wrap.style.marginTop = '10px';
+  wrap.appendChild(el('h4', null, 'Confirm who this is'));
+
+  var suggested = {};
+  for (var i = 0; i < identity.candidates.length; i++) suggested[identity.candidates[i].contact_id] = identity.candidates[i].bases.join(' and ');
+
+  var lab = el('label', 'lab', 'This request is from'); lab.setAttribute('for', 'identitySel');
+  wrap.appendChild(lab);
+  var sel = document.createElement('select');
+  sel.id = 'identitySel';
+  var o0 = document.createElement('option'); o0.value = ''; o0.textContent = '— not confirmed —';
+  sel.appendChild(o0);
+  var oU = document.createElement('option'); oU.value = '__unresolved__';
+  oU.textContent = 'Cannot be resolved from what is available';
+  sel.appendChild(oU);
+  var contacts = getSources(App.state).contacts;
+  var gSug = document.createElement('optgroup'); gSug.label = 'Suggested by a text match (a suggestion, not a match)';
+  var gAll = document.createElement('optgroup'); gAll.label = 'Any other contact (only with a basis you can state)';
+  for (var c = 0; c < contacts.length; c++){
+    var o = document.createElement('option');
+    o.value = contacts[c].contact_id;
+    o.textContent = contacts[c].name + ' — ' + (contacts[c].role || 'role not recorded') + ', ' + (contacts[c].org || 'org not recorded') +
+      ' (' + contacts[c].contact_id + ')' + (suggested[contacts[c].contact_id] ? ' — matched on ' + suggested[contacts[c].contact_id] : '');
+    (suggested[contacts[c].contact_id] ? gSug : gAll).appendChild(o);
+  }
+  if (gSug.childNodes.length) sel.appendChild(gSug);
+  sel.appendChild(gAll);
+  sel.value = d.unresolved ? '__unresolved__' : (d.contactId || '');
+  sel.addEventListener('change', function(){
+    d.unresolved = sel.value === '__unresolved__';
+    d.contactId = d.unresolved ? '' : sel.value;
+  });
+  wrap.appendChild(sel);
+  fieldArea(wrap, 'identityBasisIn', 'Basis for this (required)', d.basis, function(v){ d.basis = v; },
+    'What did you check, and how do you know? A name or a domain looking similar is not a basis on its own.');
+  errorBox(wrap, d.errors, 'Not recorded:');
+  var row = el('div', 'btnrow');
+  var go = el('button', 'primary', 'Record identity decision');
+  go.id = 'btnConfirmIdentity';
+  go.addEventListener('click', function(){
+    var res = confirmIdentity(App.state, App.state.activeRunId, {
+      submissionId: d.submissionId, requestId: d.requestId,
+      contactId: d.unresolved ? null : d.contactId, recordUnresolved: d.unresolved,
+      basis: d.basis, actorRole: App.state.ui.role
+    });
+    if (!res.ok){ d.errors = res.errors; render(); return; }
+    App.identityDraft = null; App.identityOpen = null;
+    persist();
+    notice('ok', 'Identity decision recorded', d.unresolved
+      ? 'Recorded as unresolvable. No personal history will be shown, and prior decisions stay hidden.'
+      : 'Identity confirmed with a recorded basis. Confirming who someone is does not verify what they claim.');
+    render();
+  });
+  row.appendChild(go);
+  wrap.appendChild(row);
+  host.appendChild(wrap);
+}
+
+/* A reviewer can record a conflict or an unknown the source data does not carry. */
+function renderFlagForm(host, request){
+  if (!App.flagDraft || App.flagDraft.requestId !== request.request_id){
+    App.flagDraft = { requestId:request.request_id, submissionId:uid('SUB'), kind:'unknown', text:'', errors:[] };
+  }
+  var d = App.flagDraft;
+  var wrap = el('div');
+  wrap.style.marginTop = '10px';
+  var fs = el('fieldset');
+  fs.appendChild(el('legend', null, 'Record something yourself'));
+  [['unknown','Something the records do not answer'],['conflict','Two records that disagree']].forEach(function(pair){
+    var row = el('div', 'opt');
+    var input = document.createElement('input');
+    input.type = 'radio'; input.name = 'flagkind'; input.id = 'flag_' + pair[0]; input.value = pair[0];
+    input.checked = d.kind === pair[0];
+    input.addEventListener('change', function(){ d.kind = pair[0]; });
+    var lb = document.createElement('label'); lb.setAttribute('for', 'flag_' + pair[0]);
+    lb.appendChild(document.createTextNode(pair[1]));
+    row.appendChild(input); row.appendChild(lb);
+    fs.appendChild(row);
+  });
+  fieldArea(fs, 'flagTextIn', 'In your words', d.text, function(v){ d.text = v; });
+  errorBox(fs, d.errors, 'Not recorded:');
+  var row2 = el('div', 'btnrow');
+  var go = el('button', null, 'Record it');
+  go.id = 'btnAddFlag';
+  go.addEventListener('click', function(){
+    var res = addReviewerFlag(App.state, App.state.activeRunId, {
+      submissionId: d.submissionId, requestId: d.requestId, kind: d.kind, text: d.text, actorRole: App.state.ui.role
+    });
+    if (!res.ok){ d.errors = res.errors; render(); return; }
+    App.flagDraft = null;
+    persist();
+    notice('ok', 'Recorded', 'Added to this request. It does not change any record; it sits alongside them.');
+    render();
+  });
+  row2.appendChild(go);
+  fs.appendChild(row2);
+  wrap.appendChild(fs);
+  host.appendChild(wrap);
 }
 
 function renderEvidence(){
@@ -2275,7 +2544,15 @@ function renderEvidence(){
       dl.appendChild(el('dt', null, 'Relationship owner')); dl.appendChild(el('dd', null, c.relationship_owner || 'not recorded'));
       ok.appendChild(dl);
     }
-    ok.appendChild(el('p', 'small muted', 'Confirming who someone is does not verify anything they claim about a relationship.'));
+    ok.appendChild(el('p', 'small muted', 'Confirming who someone is does not verify anything they claim about a relationship. The records below say what was written down, not what is true.'));
+    if (identity.manual && identity.manual.contactId){
+      ok.appendChild(el('p', 'small', 'Basis recorded by ' + identity.manual.actorRole + ': ' + identity.manual.basis));
+      var redo = el('button', null, 'Change this confirmation…');
+      redo.id = 'btnReopenIdentity';
+      redo.addEventListener('click', function(){ App.identityDraft = null; App.identityOpen = r.request_id; render(); });
+      ok.appendChild(redo);
+      if (App.identityOpen === r.request_id) renderIdentityForm(ok, r, identity);
+    }
     s2.appendChild(ok);
   } else {
     var bad = el('div', 'rec');
@@ -2305,7 +2582,15 @@ function renderEvidence(){
         '" (' + identity.accountHints[ai].account_id + '). That is a text resemblance only. No verified contact exists for it.'));
       bad.appendChild(ah);
     }
-    bad.appendChild(el('p', 'small muted', 'Recording a human confirmation, with its basis, is added in Step 4. Until then this stays unresolved and no personal history is shown.'));
+    if (identity.manual && identity.manual.recordedUnresolved){
+      var un = el('div', 'gap-row');
+      un.appendChild(el('span', 'tag', 'recorded'));
+      un.appendChild(el('span', null, 'Recorded as unresolvable on ' + fmtStamp(identity.manual.at) + ' by ' + identity.manual.actorRole +
+        ' — basis: ' + identity.manual.basis));
+      bad.appendChild(un);
+    }
+    bad.appendChild(el('p', 'small muted', 'No personal history is retrieved while this is unresolved. A match on text is a suggestion; only a person can confirm it, and the basis is recorded.'));
+    renderIdentityForm(bad, r, identity);
     s2.appendChild(bad);
   }
   host.appendChild(s2);
@@ -2355,6 +2640,21 @@ function renderEvidence(){
     s4.appendChild(el('div', 'hidden-hist', 'Coverage hidden — identity unconfirmed.'));
   } else {
     var gaps = getCoverageGaps(state, identity.contactId);
+    var inv = getSources(state).source_inventory;
+    var nTotal = 0, nRetrieved = 0, nUnretrieved = 0, nAbsent = 0;
+    for (var vi = 0; vi < inv.length; vi++){
+      if (inv[vi].contact_id !== identity.contactId) continue;
+      nTotal++;
+      if (inv[vi].retrieved === 'TRUE') nRetrieved++;
+      else if (inv[vi].exists === 'TRUE') nUnretrieved++;
+      else nAbsent++;
+    }
+    var sum = el('div', 'rec');
+    sum.appendChild(el('div', 'rhead', 'Coverage for this contact'));
+    sum.appendChild(el('div', null, nTotal + ' sources were looked for: ' + nRetrieved + ' retrieved and shown in full above, ' +
+      nUnretrieved + ' exist but were not retrieved, ' + nAbsent + ' expected but do not exist.'));
+    sum.appendChild(el('p', 'small muted', 'What was retrieved is not the same as what you have read and understood, and neither is the same as what exists. This count describes sources, not facts.'));
+    s4.appendChild(sum);
     if (!gaps.length) s4.appendChild(el('p', 'small', 'Every source listed in the inventory for this contact was retrieved.'));
     for (var gi = 0; gi < gaps.length; gi++){
       var g = el('div', 'gap-row');
@@ -2367,6 +2667,23 @@ function renderEvidence(){
     s4.appendChild(el('p', 'small muted', 'The inventory lists the sources someone thought to look for. Its own coverage may be incomplete.'));
   }
   host.appendChild(s4);
+
+  /* Conflicts and unknowns the reviewer records themselves */
+  var sF = evidenceSection('Recorded conflicts and unknowns',
+    'The source data only tags the conflicts it was annotated with. Anything you notice yourself is recorded here, in your words.');
+  var flags = getReviewerFlags(state, runId, r.request_id);
+  for (var fi = 0; fi < flags.length; fi++){
+    var fr = el('div', 'rec');
+    var fh = el('div', 'rhead');
+    fh.appendChild(el('span', 'tag', flags[fi].kind === 'conflict' ? 'conflict recorded by reviewer' : 'unknown recorded by reviewer'));
+    fh.appendChild(el('span', null, fmtStamp(flags[fi].at) + ' · ' + flags[fi].actorRole));
+    fr.appendChild(fh);
+    fr.appendChild(el('div', 'rtext', flags[fi].text));
+    sF.appendChild(fr);
+  }
+  if (!flags.length) sF.appendChild(el('p', 'small muted', 'Nothing recorded yet for this request.'));
+  renderFlagForm(sF, r);
+  host.appendChild(sF);
 
   /* Prior decisions — hidden until identity is established */
   var s5 = evidenceSection('Prior decisions for this person', null);
@@ -2414,6 +2731,7 @@ function blankDraft(state, runId, request){
     ackBy: '', ackConfirmed: false,
     amendApprover: '', amendApproverRole: 'Leader (simulated)', amendReason: '',
     exception: false, exceptionReason: '',
+    needsClarification: false, clarification: '',
     errors: []
   };
 }
@@ -2532,8 +2850,58 @@ function renderDecisionForm(){
       'Separate from the decision reason below.');
   }
 
+  if (draft.state === 'needs_review' || draft.state === 'deferred'){
+    var clRow = el('div', 'opt');
+    var clIn = document.createElement('input');
+    clIn.type = 'checkbox'; clIn.id = 'needsClarificationIn'; clIn.checked = !!draft.needsClarification;
+    clIn.addEventListener('change', function(){ draft.needsClarification = clIn.checked; renderDecisionForm(); });
+    var clLab = document.createElement('label');
+    clLab.setAttribute('for', 'needsClarificationIn');
+    clLab.appendChild(document.createTextNode('I need a clarification before this can be decided'));
+    clLab.appendChild(el('span', 'ohint', 'Recorded with the decision. This application never contacts anyone.'));
+    clRow.appendChild(clIn); clRow.appendChild(clLab);
+    host.appendChild(clRow);
+    if (draft.needsClarification){
+      fieldArea(host, 'clarificationIn', 'Clarification needed (required)', draft.clarification, function(v){ draft.clarification = v; });
+    }
+  }
+
+  var prompts = el('div', 'rec');
+  prompts.appendChild(el('div', 'rhead', 'One reason. Three things worth answering in it.'));
+  var pl = el('ul');
+  ['Why the leader, rather than someone else?',
+   'Why now, rather than later?',
+   'What does this displace?'].forEach(function(x){ pl.appendChild(el('li', 'small', x)); });
+  prompts.appendChild(pl);
+  host.appendChild(prompts);
+
   fieldArea(host, 'reasonIn', 'Reason (required)', draft.reason, function(v){ draft.reason = v; },
-    'Link the evidence, or the capacity limit, to the trade-off you are making. Prompts to consider: why the leader rather than someone else; why now rather than later; what this displaces. Fuller prompts and optional wording chips are added in Step 4.');
+    'Link the evidence, or the capacity limit, to the trade-off you are making.');
+
+  /* Optional wording starters. They are generic, they carry no evidence,
+     and none of them selects an action for you. */
+  var chipWrap = el('div', 'btnrow');
+  chipWrap.id = 'reasonChips';
+  chipWrap.appendChild(el('span', 'small muted', 'Optional openers (editable, and none of them decides anything):'));
+  ['The deadline is fixed by ',
+   'The records conflict, and I am relying on ',
+   'The records do not answer ',
+   'Identity is unconfirmed, so ',
+   'There is no capacity this cycle because ',
+   'Someone other than the leader can do this because ',
+   'This displaces '].forEach(function(text){
+    var chip = el('button', null, text.trim() + '…');
+    chip.type = 'button';
+    chip.addEventListener('click', function(){
+      var box = document.getElementById('reasonIn');
+      var cur = draft.reason || '';
+      draft.reason = cur + (cur && !/\s$/.test(cur) ? ' ' : '') + text;
+      box.value = draft.reason;
+      box.focus();
+    });
+    chipWrap.appendChild(chip);
+  });
+  host.appendChild(chipWrap);
 
   var exRow = el('div', 'opt');
   var exIn = document.createElement('input');
@@ -2584,6 +2952,7 @@ function submitDecision(){
     ackBy: draft.ackBy, ackConfirmed: draft.ackConfirmed,
     amendApprover: draft.amendApprover, amendApproverRole: draft.amendApproverRole, amendReason: draft.amendReason,
     exception: draft.exception, exceptionReason: draft.exceptionReason,
+    needsClarification: draft.needsClarification, clarification: draft.clarification,
     actorRole: App.state.ui.role
   };
   var res = applyDecision(App.state, App.state.activeRunId, proposal);
@@ -2603,6 +2972,54 @@ function submitDecision(){
   }
   App.formDraft = null;
   render();
+}
+
+/* ---------- Unresolved and overdue work ------------------------------ */
+/* Deferrals and pending delegations stay visible until someone moves them
+   on. Nothing here closes itself. */
+function renderUnresolved(){
+  var host = document.getElementById('unresolvedBody');
+  clear(host);
+  var state = App.state, runId = state.activeRunId;
+  var items = getUnresolvedWork(state, runId);
+  var overdue = 0;
+  for (var i = 0; i < items.length; i++) if (items[i].overdue) overdue++;
+  var sum = document.querySelector('#secUnresolved > summary');
+  sum.textContent = 'Unresolved and overdue work' + (items.length ? ' — ' + items.length + ' open' + (overdue ? ', ' + overdue + ' overdue' : '') : ' — none');
+  if (!items.length){
+    host.appendChild(el('p', 'small muted', 'Nothing is deferred or awaiting a delegation in this run. Items placed in those states stay here until someone resolves them.'));
+    return;
+  }
+  if (overdue){
+    var b = el('div', 'banner stop');
+    b.appendChild(el('strong', null, overdue + ' item' + (overdue === 1 ? ' is' : 's are') + ' past the review date recorded for them.'));
+    b.appendChild(el('div', null, 'They do not resolve themselves and they are not closed automatically. Open each one and record what happens next.'));
+    host.appendChild(b);
+  }
+  var t = el('table', 'grid');
+  var hr = el('tr');
+  ['Request','Batch','State','Owner','Review by','Status',''].forEach(function(x){ hr.appendChild(el('th', null, x)); });
+  t.appendChild(hr);
+  for (i = 0; i < items.length; i++){
+    (function(it){
+      var tr = el('tr');
+      tr.appendChild(el('td', null, it.requestId));
+      tr.appendChild(el('td', null, it.batch));
+      tr.appendChild(el('td', null, STATES[it.state].label));
+      tr.appendChild(el('td', null, it.owner));
+      tr.appendChild(el('td', null, it.reviewDate || 'no date recorded'));
+      var td = el('td', null, it.overdue ? 'OVERDUE by ' + it.daysOverdue + ' day' + (it.daysOverdue === 1 ? '' : 's') : 'open');
+      if (it.overdue){ td.style.color = 'var(--stop-ink)'; td.style.fontWeight = '600'; }
+      tr.appendChild(td);
+      var tdb = el('td');
+      var go = el('button', null, 'Open');
+      go.addEventListener('click', function(){ state.ui.batch = it.batch; selectRequest(it.requestId); window.scrollTo(0,0); });
+      tdb.appendChild(go);
+      tr.appendChild(tdb);
+      t.appendChild(tr);
+    })(items[i]);
+  }
+  host.appendChild(t);
 }
 
 /* ---------- Reservations and reconciliation -------------------------- */
@@ -2909,6 +3326,7 @@ function renderHistory(){
     t.appendChild(tr);
   }
   host.appendChild(t);
+  renderDecisionRecords(host);
   if (App.state.history && App.state.history.length){
     host.appendChild(el('h4', null, 'Application log'));
     var t2 = el('table', 'grid');
@@ -2923,6 +3341,128 @@ function renderHistory(){
       t2.appendChild(r2);
     }
     host.appendChild(t2);
+  }
+}
+
+/* Reads a decision's inputs from the snapshot it was made on, so a later
+   import cannot change what a past decision was based on. */
+function getSnapshotById(state, snapshotId){
+  for (var i = 0; i < state.sourceSnapshots.length; i++) if (state.sourceSnapshots[i].snapshotId === snapshotId) return state.sourceSnapshots[i];
+  return null;
+}
+function renderDecisionRecords(host){
+  var state = App.state, runId = state.activeRunId, run = getRun(state, runId);
+  var ids = [], rid;
+  for (rid in run.decisions) ids.push(rid);
+  if (!ids.length) return;
+  ids.sort();
+  host.appendChild(el('h4', null, 'What each decision was based on, and what happened later'));
+  host.appendChild(el('p', 'small muted', 'Each decision keeps the request wording, source references, identity position, reason, duration, who recorded it, when, and the priority version in force. Importing new records later does not change any of this.'));
+  if (!App.outcomeDrafts) App.outcomeDrafts = {};
+
+  for (var i = 0; i < ids.length; i++){
+    (function(d){
+      var card = el('div', 'rec');
+      var h = el('div', 'rhead');
+      h.appendChild(el('span', 'pill' + (stateReserves(d.state) ? ' good' : ''), d.requestId + ' · ' + STATES[d.state].label));
+      h.appendChild(el('span', null, d.minutes + ' min'));
+      h.appendChild(el('span', null, fmtStamp(d.at)));
+      h.appendChild(el('span', null, 'by ' + d.actorRole));
+      h.appendChild(el('span', null, 'priority ' + d.priorityVersion));
+      h.appendChild(el('span', null, 'inputs ' + d.snapshotId));
+      if (d.origin === 'off_record_promise') h.appendChild(el('span', 'tag', 'reported promise, not an approval'));
+      card.appendChild(h);
+      card.appendChild(el('div', 'rtext', d.reason));
+      if (d.clarification) card.appendChild(el('p', 'small', 'Clarification needed: ' + d.clarification.question));
+      if (d.exception) card.appendChild(el('p', 'small', 'Strategic exception: ' + d.exception.explanation));
+      if (d.amendment) card.appendChild(el('p', 'small', 'Leader-approved amendment (simulated) by ' + d.amendment.approver + ', ' + d.amendment.approverRole + ': ' + d.amendment.reason));
+
+      var det = document.createElement('details');
+      var sm = document.createElement('summary');
+      sm.textContent = 'The exact inputs behind this decision';
+      sm.style.cursor = 'pointer'; sm.style.fontSize = '13px';
+      det.appendChild(sm);
+      var body = el('div');
+      body.appendChild(el('h4', null, 'Request as it read at the time'));
+      body.appendChild(el('div', 'said', d.evidenceSnapshot.askText));
+      body.appendChild(el('p', 'small muted', 'Asked for ' + d.evidenceSnapshot.minutesRequested + ' minutes. Identity at the time: ' + d.evidenceSnapshot.identityStatus +
+        (d.evidenceSnapshot.contactId ? ' (' + d.evidenceSnapshot.contactId + ')' : '') + '.'));
+      body.appendChild(el('h4', null, 'Source references used'));
+      var snap = getSnapshotById(state, d.snapshotId);
+      if (!d.evidenceSnapshot.sourceNoteIds.length){
+        body.appendChild(el('p', 'small', 'No source excerpts were available to this decision.'));
+      } else if (!snap){
+        body.appendChild(el('p', 'small', 'Referenced ' + d.evidenceSnapshot.sourceNoteIds.join(', ') + ', but the snapshot they came from is not in this backup.'));
+      } else {
+        for (var k = 0; k < d.evidenceSnapshot.sourceNoteIds.length; k++){
+          var nid = d.evidenceSnapshot.sourceNoteIds[k], note = null;
+          for (var z = 0; z < snap.data.notes.length; z++) if (snap.data.notes[z].note_id === nid) note = snap.data.notes[z];
+          var nr = el('div', 'rec');
+          nr.appendChild(el('div', 'rhead', nid + (note ? ' · ' + note.source_type + ' · ' + note.date : ' · not in this snapshot')));
+          if (note) nr.appendChild(el('div', 'rtext', note.excerpt));
+          body.appendChild(nr);
+        }
+      }
+      det.appendChild(body);
+      card.appendChild(det);
+
+      var outs = getOutcomesForDecision(state, runId, d.decisionId);
+      for (var o = 0; o < outs.length; o++){
+        var orow = el('div', 'gap-row');
+        orow.appendChild(el('span', 'tag' + (outs[o].availableOriginally ? '' : ' gap'), outs[o].availableOriginally ? 'was knowable at the time' : 'newly learned'));
+        orow.appendChild(el('span', null, outs[o].text + ' — recorded ' + fmtStamp(outs[o].at) + ' by ' + outs[o].actorRole));
+        card.appendChild(orow);
+      }
+
+      var draft = App.outcomeDrafts[d.decisionId];
+      if (!draft){
+        var ob = el('button', null, 'Record what happened later…');
+        ob.id = 'btnOutcome_' + d.requestId;
+        ob.addEventListener('click', function(){
+          App.outcomeDrafts[d.decisionId] = { submissionId:uid('SUB'), text:'', availableOriginally:null, errors:[] };
+          render();
+        });
+        card.appendChild(ob);
+      } else {
+        var fs = el('fieldset');
+        fs.appendChild(el('legend', null, 'What happened later'));
+        fieldArea(fs, 'outcomeText_' + d.requestId, 'What happened', draft.text, function(v){ draft.text = v; });
+        [[true,'This was knowable at the time of the decision'],[false,'This is newly learned — it was not available then']].forEach(function(pair){
+          var row = el('div', 'opt');
+          var input = document.createElement('input');
+          input.type = 'radio'; input.name = 'orig_' + d.requestId; input.id = 'orig_' + d.requestId + '_' + pair[0];
+          input.checked = draft.availableOriginally === pair[0];
+          input.addEventListener('change', function(){ draft.availableOriginally = pair[0]; });
+          var lb = document.createElement('label'); lb.setAttribute('for', input.id);
+          lb.appendChild(document.createTextNode(pair[1]));
+          row.appendChild(input); row.appendChild(lb);
+          fs.appendChild(row);
+        });
+        fs.appendChild(el('p', 'small muted', 'Recorded as plain text against this decision. No score, no analysis, and the decision itself is not changed.'));
+        errorBox(fs, draft.errors, 'Not recorded:');
+        var brow = el('div', 'btnrow');
+        var go = el('button', 'primary', 'Save outcome');
+        go.id = 'btnOutcomeSave_' + d.requestId;
+        go.addEventListener('click', function(){
+          var res = addOutcome(App.state, App.state.activeRunId, {
+            submissionId: draft.submissionId, decisionId: d.decisionId, text: draft.text,
+            availableOriginally: draft.availableOriginally, actorRole: App.state.ui.role
+          });
+          if (!res.ok){ draft.errors = res.errors; render(); return; }
+          delete App.outcomeDrafts[d.decisionId];
+          persist();
+          notice('ok', 'Outcome recorded', 'Kept alongside the decision. The decision and the inputs behind it are unchanged.');
+          render();
+        });
+        brow.appendChild(go);
+        var cn = el('button', null, 'Cancel');
+        cn.addEventListener('click', function(){ delete App.outcomeDrafts[d.decisionId]; render(); });
+        brow.appendChild(cn);
+        fs.appendChild(brow);
+        card.appendChild(fs);
+      }
+      host.appendChild(card);
+    })(run.decisions[ids[i]]);
   }
 }
 
@@ -2949,6 +3489,10 @@ function renderSummary(){
     dl.appendChild(el('dt', null, 'Off-record promises reported'));
     dl.appendChild(el('dd', null, promiseCount + ' active, ' + promiseMinutes + ' minutes promised'));
   }
+  var unres = getUnresolvedWork(state, runId), overdueN = 0;
+  for (var ui = 0; ui < unres.length; ui++) if (unres[ui].overdue) overdueN++;
+  dl.appendChild(el('dt', null, 'Unresolved work (both batches)'));
+  dl.appendChild(el('dd', null, unres.length + ' open' + (overdueN ? ', ' + overdueN + ' overdue' : '')));
   for (var s = 0; s < STATE_ORDER.length; s++){
     if (!STATES[STATE_ORDER[s]].implemented && !counts[STATE_ORDER[s]]) continue;
     dl.appendChild(el('dt', null, STATES[STATE_ORDER[s]].label));
@@ -3069,7 +3613,7 @@ function handleBackupRestore(file){
       notice('stop', 'Restore rejected — your work is unchanged', errs.join(' '));
       render(); return;
     }
-    App.state = obj.state;
+    App.state = normaliseState(obj.state);
     App.corrupt = null;
     App.formDraft = null;
     App.state.history.push({ eventId: uid('EV'), at: nowIso(), type: 'backup_restored', detail: 'Restored from a backup exported at ' + obj.exportedAt + '.' });
@@ -3187,9 +3731,8 @@ function renderTech(){
 
   host.appendChild(el('h4', null, 'What is not built yet'));
   var ul = el('ul');
-  ['Human confirmation of an unresolved identity, decision chips and fuller reason prompts (Step 4).',
-   'Surfacing overdue deferrals and pending delegations, and later-outcome entry (Step 4).',
-   'Copying an evidence packet, pasting a manually supplied brief, citation checking, late release and four independent runs (Step 5).',
+  ['Copying an evidence packet, pasting a manually supplied brief and checking its citations (Step 5).',
+   'Releasing the late request, four independent runs and the assessor review (Step 5).',
    'In-page self-checks (Step 6).'].forEach(function(x){ ul.appendChild(el('li', null, x)); });
   host.appendChild(ul);
   host.appendChild(el('p', 'small muted', 'These are listed rather than shown as controls that do nothing.'));
