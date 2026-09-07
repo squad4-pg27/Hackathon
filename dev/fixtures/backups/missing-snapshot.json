@@ -1,0 +1,18 @@
+{
+  "format": "time-ledger-backup",
+  "schemaVersion": 1,
+  "exportedAt": "2026-09-07T00:00:00.000Z",
+  "state": {
+    "app": "time-ledger",
+    "schemaVersion": 1,
+    "activeSnapshotId": "SNAP-THAT-IS-NOT-HERE",
+    "sourceSnapshots": [
+      { "snapshotId": "SNAP-OTHER", "importedAt": "2026-09-07T00:00:00.000Z", "label": "x",
+        "data": { "requests": [], "contacts": [], "accounts": [], "notes": [],
+                  "source_inventory": [], "prior_decisions": [], "priority_versions": [], "commitments": [] } }
+    ],
+    "activeRunId": "RUN-1",
+    "runs": { "RUN-1": { "runId": "RUN-1", "decisions": {}, "history": [], "identityResolutions": {}, "briefs": {} } },
+    "history": []
+  }
+}

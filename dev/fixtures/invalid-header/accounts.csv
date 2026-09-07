@@ -1,0 +1,9 @@
+account_id,account_name,owner,annual_value,notes
+ACC001,Meridian Freight,Priya Raman,1250000,Largest account by recorded annual value. Rollout completed 2026-08.
+ACC002,Calder Health,Jordan Steele,480000,Customer. Renewal signed 2026-02.
+ACC003,Brightpath Logistics,Jordan Steele,0,Early-stage prospect. No commercial terms discussed.
+ACC004,Vantage Partners,The leader,0,"Investor, not a revenue account. annual_value is zero by definition here, not by size."
+ACC005,Kestrel Foods,Jordan Steele,210000,Customer. Renewal timing disputed between records; see conflict_group CG1.
+ACC006,Orenda Systems,,,Inbound mail has been received from the domain orenda.example. No verified contact record exists for this account and no relationship has been confirmed.
+ACC007,Northgate Capital,Jordan Steele,0,Prospect. Written materials requested 2026-06 before any meeting.
+ACC008,Lattice Consulting,Priya Raman,35000,Partner consultancy. Small recorded annual value.

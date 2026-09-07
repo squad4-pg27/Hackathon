@@ -1,0 +1,13 @@
+contact_id,name,email,org,account_id,role,relationship_owner
+C001,Sam Rivera,sam.rivera@meridianfreight.example,Meridian Freight,ACC001,Operations Director,Priya Raman
+C002,Sam Rivera,s.rivera@brightpathlogistics.example,Brightpath Logistics,ACC003,Founder,Jordan Steele
+C003,Grace Lindqvist,g.lindqvist@meridianfreight.example,Meridian Freight,ACC001,Chief Operating Officer,Priya Raman
+C004,Owen Baptiste,o.baptiste@calderhealth.example,Calder Health,ACC002,VP Clinical Operations,Jordan Steele
+C005,Elena Duarte,elena.duarte@kestrelfoods.example,Kestrel Foods,ACC005,Head of Procurement,Jordan Steele
+C006,Peter Lund,p.lund@kestrelfoods.example,Kestrel Foods,ACC005,Finance Manager,Jordan Steele
+C007,Hallie Nwosu,hallie@vantagepartners.example,Vantage Partners,ACC004,Partner,The leader
+C008,Daniel Oyelaran,d.oyelaran@northgatecap.example,Northgate Capital,ACC007,Associate,Jordan Steele
+C009,Ravi Chandran,ravi.chandran@harbourline.example,Harbourline (internal),,Head of Support,The leader
+C010,Tomas Berg,t.berg@latticeconsulting.example,Lattice Consulting,ACC008,Analyst,Priya Raman
+C011,Jorge Alvarez,j.alvarez@harbourline.example,Harbourline (internal),,Platform Engineer,
+C012,Nadia Hassan,nadia.hassan@mailbox.example,,,"Candidate, not selected 2025",Hiring lead

@@ -1,0 +1,89 @@
+# Time Ledger — test kit
+
+Development tooling. **The application does not use any of this.** `index.html`
+stays one self-contained file with no dependencies; nothing in `dev/` is loaded
+by it, referenced from it, or needed to run it. You can delete this whole folder
+and the application still works.
+
+---
+
+## Running the tests
+
+You need Node and Playwright's Chromium. Playwright is a development tool only.
+
+```bash
+npm install --no-save playwright
+npx playwright install chromium
+
+node dev/run-all.js              # every suite, one line per check
+node dev/run-all.js --quiet      # summary table, plus any failures
+node dev/run-all.js 03 05        # only suites 03 and 05
+node dev/suites/03-state-machine.js   # one suite on its own
+
+python3 dev/validate-fixtures.py # checks data/*.csv without a browser
+```
+
+The exit code is `0` if nothing failed, `1` if something did, `2` if the
+harness itself could not run (usually Playwright missing — it says so).
+
+Every suite opens `index.html` at its real `file://` address. **No server is
+started at any point.** That is deliberate: the application has to work by
+double-clicking the file, so it is tested that way.
+
+---
+
+## What each suite covers
+
+| Suite | Covers |
+|---|---|
+| `01-core-journey.js` | The eight-step path: open, select, inspect evidence and identity uncertainty, the labelled brief placeholder, save a decision with a reason, correct remaining minutes, **a real page reload**, and **a real backup download, reset and restore**. Also whitespace-only reasons, rapid double clicks, a blocked over-capacity approval, hostile text, focus and layout |
+| `02-data-handling.js` | Importing a whole dataset only after validating it; each class of error named with its file and row; a wrong header stopping row checks; the coverage-ledger rules; the assessor key refused by the ordinary import; earlier input snapshots never erased; quoted multi-line CSV; five kinds of bad backup refused; storage that is already unreadable, left alone, with unrelated keys untouched |
+| `03-state-machine.js` | The exact capacity scenario end to end, then the gates: conversion carrying a reservation across, a promise linked to an existing reservation converting rather than reserving twice, a promise unable to get around the amendment gate, ordinary edits unable to touch a binding, delegation needing an acknowledgement, and only an explicit policy change creating a priority version |
+| `04-evidence-and-identity.js` | Namesakes staying separate, a domain-only link staying unverified, "cannot be resolved" as an explicit choice, requester assertions kept out of the records, coverage gaps, reviewer-recorded unknowns, the reason prompts and openers, conditional fields, overdue work resurfacing, what is kept behind a decision, later outcomes, and that no scoring or ranking feature exists |
+| `05-briefs-and-runs.js` | Copying a packet and what it may and may not contain, the clipboard fallback, every brief fixture and its expected verdict, staleness and re-review, releasing the late request, run isolation, effort capture with elapsed time excluded, and the assessor gate including that the key never reaches state, storage or a backup |
+| `06-self-checks.js` | Presses the application's own **Run self-checks** button and reports every row it produces, then confirms from outside that the operator's work and saved record were untouched |
+| `07-control-audit.js` | Every button labelled, every field labelled, focus visible on every control reached, no horizontal overflow at 1280×720, and clicking every control (except the one-way ones) raising no errors |
+
+`dev/fixtures/README.md` documents the mock data, including what each broken
+file breaks and what the application should say about it.
+
+---
+
+## How the checks are written
+
+- **Verdicts are `PASS`, `FAIL`, `UNVERIFIED` or `NOT IMPLEMENTED`**, each with
+  what was actually observed, not what was expected.
+- **Suites drive the interface**, clicking real controls, because that is what
+  an operator does. Where a rule has no matching control — re-submitting a
+  stored submission id, for instance — the suite calls the engine function
+  directly and the check text says so.
+- **The checks assert outcomes, never re-derive rules.** A capacity check
+  expects the literal number 70, rather than recomputing it from the same
+  formula the application uses. A test that reimplements the rule it is
+  checking cannot fail when that rule is wrong.
+- **`UNVERIFIED` is used honestly.** Recovering work across a browser reload is
+  reported by the in-page self-checks as UNVERIFIED, because writing to memory
+  is not proof a browser keeps data. Suite 01 does perform a real reload, so it
+  reports a genuine result — but only in the browser it ran in.
+
+---
+
+## What these tests do not tell you
+
+- They ran in **Chromium**. Browser storage under a `file://` address is not
+  guaranteed elsewhere; Safari and Firefox commonly restrict it, and neither
+  has been tested. The application probes storage on load and reports what it
+  finds rather than assuming.
+- They check **behaviour, not judgement**. Nothing here can tell you whether
+  the fixtures read as realistic or whether the evidence key's judgements are
+  the right ones. Those need a person.
+- A full pass is **not** a claim that the application is free of faults. Three
+  faults were found by these checks after the application was believed
+  finished, which is the point of having them.
+
+---
+
+## Files written while testing
+
+Downloads captured during a run go to `dev/.out/`, which is ignored by Git.
+Delete it whenever you like.

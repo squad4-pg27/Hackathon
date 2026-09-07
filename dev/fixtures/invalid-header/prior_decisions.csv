@@ -1,0 +1,9 @@
+decision_id,contact_id,date,action,reason
+D001,C001,2026-05-12,provisional_approval,Operations escalation on the Meridian rollout. 30 minutes reserved ahead of go-live.
+D002,C002,2026-02-09,declined,Early-stage partnership pitch. A written one-pager was requested instead of leader time.
+D003,C008,2026-06-18,declined,No capacity in the June cycle. Written materials requested before any meeting.
+D004,C005,2026-04-21,binding,Renewal scoping call held. 45 minutes.
+D005,C012,2025-09-30,declined,Candidate feedback conversation handled by the hiring lead rather than the leader.
+D006,C010,2026-01-27,deferred,Asked to revisit once the Meridian rollout had completed.
+D007,C007,2026-08-03,binding,Quarterly investor update. 30 minutes.
+D008,C009,2026-05-06,declined,Support escalation routed to the operations lead.

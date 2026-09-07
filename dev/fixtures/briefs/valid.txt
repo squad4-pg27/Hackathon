@@ -1,0 +1,18 @@
+{{PACKET_ID}}
+
+THE ASK
+- The requester asks for a working session on renewal scope [REQUEST:{{REQUEST_ID}}].
+- The requester says their board moved the sign-off date forward. That is the requester's own account.
+
+WHAT THE RECORDS SHOW
+- A CRM record puts the renewal decision in Q1 2027 [NOTE:{{NOTE_1}}].
+- A later meeting note puts the board sign-off before the end of September 2026 [NOTE:{{NOTE_2}}].
+- These two records are tagged as conflicting. Which one is correct is not in the records.
+
+DOCUMENTED CONNECTIONS
+- The requester is recorded against an account with a named relationship owner [CONTACT:{{CONTACT_ID}}].
+- Not in the records: any connection beyond that account relationship.
+
+UNANSWERED QUESTIONS
+- Whether the renewal date actually moved, given the two records disagree.
+- What the unretrieved source would have shown [SOURCE:{{GAP_ID}}].

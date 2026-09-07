@@ -1,0 +1,14 @@
+{{PACKET_ID}}
+
+THE ASK
+- The requester asks for a renewal conversation [REQUEST:{{REQUEST_ID}}].
+
+WHAT THE RECORDS SHOW
+- A renewal record exists [NOTE:{{NOTE_1}}].
+- Not in the records: anything about budget authority.
+
+DOCUMENTED CONNECTIONS
+- None.
+
+UNANSWERED QUESTIONS
+- Whether the renewal date moved.

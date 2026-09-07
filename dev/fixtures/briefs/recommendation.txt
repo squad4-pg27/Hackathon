@@ -1,0 +1,17 @@
+{{PACKET_ID}}
+
+THE ASK
+- The requester asks for a renewal conversation [REQUEST:{{REQUEST_ID}}].
+
+WHAT THE RECORDS SHOW
+- A renewal record exists [NOTE:{{NOTE_1}}].
+- This is the most valuable account in the batch and I would score it 9/10 for urgency.
+
+DOCUMENTED CONNECTIONS
+- Not in the records.
+
+UNANSWERED QUESTIONS
+- None.
+
+RECOMMENDATION
+- I recommend accepting this meeting and declining the others.

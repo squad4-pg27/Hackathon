@@ -40,7 +40,10 @@ Limitations that must be displayed plainly in the UI:
 - It runs by **double-clicking `index.html`**. Never use `fetch()` or
   `XMLHttpRequest` to read local files. Imports use a file input + `FileReader`.
 - Allowed supporting files (not runtime dependencies): `CLAUDE.md`,
-  `data/*.csv`, `data/README.md`.
+  `data/*.csv`, `data/README.md`, and the `dev/` test kit (harness, suites,
+  mock fixtures, runner). Nothing in `dev/` is loaded by, referenced from or
+  needed by `index.html`; deleting the folder must leave the application
+  working.
 - Embed normal demo records as safely serialised JavaScript data.
   **Never embed the assessor evidence key** (`data/evidence_key.csv`) in
   `index.html`, in application state, in backups, or in copied packets.
@@ -230,6 +233,17 @@ to type `continue`.** `continue` authorises the next step through its gate.
   Do not silently drop promised features.
 - Self-checks must never reset, overwrite or clear the operator's active state
   or persistence; they use isolated fixtures and a separate test storage adapter.
+
+## Testing
+
+- `node dev/run-all.js` runs every suite against the real `file://` address,
+  with no server. `python3 dev/validate-fixtures.py` checks `data/*.csv`
+  without a browser. `dev/README.md` explains both.
+- Checks assert outcomes and never re-derive the rule they are checking.
+- Mock data lives in `dev/fixtures/`, documented in `dev/fixtures/README.md`.
+  The assessor key is never copied there.
+- Add a check for every fault found, and keep `UNVERIFIED` for anything the
+  checks genuinely cannot prove.
 
 ## Git
 

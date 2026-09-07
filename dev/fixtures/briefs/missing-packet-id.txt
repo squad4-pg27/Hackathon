@@ -1,0 +1,11 @@
+THE ASK
+- The requester asks for time [REQUEST:{{REQUEST_ID}}].
+
+WHAT THE RECORDS SHOW
+- A renewal record exists [NOTE:{{NOTE_1}}].
+
+DOCUMENTED CONNECTIONS
+- Not in the records.
+
+UNANSWERED QUESTIONS
+- None.

@@ -1,0 +1,14 @@
+{{PACKET_ID}}
+
+THE ASK
+- The requester asks for time [REQUEST:{{REQUEST_ID}}].
+
+WHAT THE RECORDS SHOW
+- A record confirms a long-standing relationship [NOTE:N999].
+- Another record confirms budget authority [DECISION:D999].
+
+DOCUMENTED CONNECTIONS
+- Not in the records.
+
+UNANSWERED QUESTIONS
+- None.

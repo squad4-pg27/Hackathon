@@ -1,0 +1,15 @@
+{{PACKET_ID}}
+
+THE ASK
+- The requester asks for a renewal conversation [REQUEST:{{REQUEST_ID}}].
+
+WHAT THE RECORDS SHOW
+- A renewal record exists [NOTE:{{NOTE_1}}].
+- The account has been growing steadily for three years.
+- The requester has always been responsive.
+
+DOCUMENTED CONNECTIONS
+- They introduced two other customers last year.
+
+UNANSWERED QUESTIONS
+- None.
