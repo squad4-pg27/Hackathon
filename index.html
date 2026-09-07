@@ -137,6 +137,7 @@
 
 <div class="wrap">
   <div id="alertRegion" role="status" aria-live="polite"></div>
+  <div id="deficitRegion"></div>
 
   <section class="limits">
     <strong>What this tool is and is not</strong>
@@ -167,6 +168,21 @@
       <div id="decisionBody"></div>
     </section>
   </main>
+
+  <details class="sec" id="secReserve">
+    <summary>Current reservations and reconciliation</summary>
+    <div class="secbody" id="reserveBody"></div>
+  </details>
+
+  <details class="sec" id="secPromise">
+    <summary>Report an off-record promise</summary>
+    <div class="secbody" id="promiseBody"></div>
+  </details>
+
+  <details class="sec" id="secPolicy">
+    <summary>Priorities and policy versions</summary>
+    <div class="secbody" id="policyBody"></div>
+  </details>
 
   <details class="sec" id="secHistory">
     <summary>Decision history and application log</summary>
@@ -1128,10 +1144,30 @@ function getPriorDecisionsForContact(state, contactId){
   out.sort(function(a,b){ return a.date < b.date ? -1 : 1; });
   return out;
 }
+/* Priority versions come from the records, plus any policy change a human
+   recorded in this session. Recorded policy changes are kept OUTSIDE the
+   source snapshots, so a later policy change never rewrites the inputs a
+   past decision was made on. */
+function getAllPriorityVersions(state){
+  var out = [], i;
+  var src = getSources(state).priority_versions;
+  for (i = 0; i < src.length; i++){
+    out.push({ version:src[i].version, effective_date:src[i].effective_date, summary:src[i].summary, origin:'supplied records', order:i });
+  }
+  var extra = state.policyVersions || [];
+  for (i = 0; i < extra.length; i++){
+    out.push({ version:extra[i].version, effective_date:extra[i].effective_date, summary:extra[i].summary,
+               origin:'policy change recorded by ' + extra[i].actorRole + ' on ' + fmtStamp(extra[i].at), order:src.length + i });
+  }
+  out.sort(function(a,b){
+    if (a.effective_date !== b.effective_date) return a.effective_date < b.effective_date ? -1 : 1;
+    return a.order - b.order;
+  });
+  return out;
+}
 function getCurrentPriorityVersion(state){
-  var pv = getSources(state).priority_versions.slice();
-  pv.sort(function(a,b){ return a.effective_date < b.effective_date ? -1 : 1; });
-  return pv[pv.length - 1];
+  var all = getAllPriorityVersions(state);
+  return all[all.length - 1];
 }
 function getCommitmentsForBatch(state, batch){
   var out = [], cs = getSources(state).commitments;
@@ -1214,26 +1250,70 @@ function resolveIdentity(state, runId, request){
 /* Deterministic JavaScript. No model is involved in any of this. */
 
 var STATES = {
-  needs_review:         { label:'Needs review',          reserves:false, implemented:true  },
-  provisional_approval: { label:'Provisional approval',  reserves:true,  implemented:true  },
-  declined:             { label:'Declined',              reserves:false, implemented:true  },
-  binding:              { label:'Binding',               reserves:true,  implemented:false, why:'Added in Step 3, with the leader-approved amendment rules it requires.' },
-  deferred:             { label:'Deferred',              reserves:false, implemented:false, why:'Added in Step 3, with the owner and review-date fields it requires.' },
-  delegation_pending:   { label:'Delegation pending',    reserves:false, implemented:false, why:'Added in Step 3, with the owner and acknowledgement it requires.' },
-  delegation_confirmed: { label:'Delegation confirmed',  reserves:false, implemented:false, why:'Added in Step 3, after explicit acknowledgement exists.' }
+  needs_review:         { label:'Needs review',          reserves:false, implemented:true },
+  provisional_approval: { label:'Provisional approval',  reserves:true,  implemented:true },
+  declined:             { label:'Declined',              reserves:false, implemented:true },
+  binding:              { label:'Binding',               reserves:true,  implemented:true },
+  deferred:             { label:'Deferred',              reserves:false, implemented:true },
+  delegation_pending:   { label:'Delegation pending',    reserves:false, implemented:true },
+  delegation_confirmed: { label:'Delegation confirmed',  reserves:false, implemented:true }
 };
-var STATE_ORDER = ['needs_review','provisional_approval','declined','binding','deferred','delegation_pending','delegation_confirmed'];
+var STATE_ORDER = ['needs_review','provisional_approval','binding','declined','deferred','delegation_pending','delegation_confirmed'];
 
-/* Transition table. Step 3 extends this; the engine reads the table
-   rather than hard-coding any path. */
+/* The transition table agreed at Gate 3A. Each allowed cell carries its
+   gates, and the engine reads the table rather than hard-coding a path.
+     cap   - the increase must fit remaining capacity; blocked in deficit
+     keep  - carries the existing reservation across unchanged; duration locked
+     amend - needs an explicit simulated leader-approved amendment
+     owner - needs an owner and a review date
+     ack   - needs an explicit acknowledgement
+   Every transition also needs a reason. A release of an outgoing
+   reservation is implied whenever the new reservation is smaller. */
 var TRANSITIONS = {
-  needs_review:         ['provisional_approval','declined'],
-  provisional_approval: ['provisional_approval','declined'],
-  declined:             ['needs_review','provisional_approval']
+  needs_review: {
+    provisional_approval:{ cap:true }, binding:{ cap:true }, declined:{},
+    deferred:{ owner:true }, delegation_pending:{ owner:true }
+  },
+  provisional_approval: {
+    needs_review:{}, provisional_approval:{ cap:true }, binding:{ keep:true },
+    declined:{}, deferred:{ owner:true }, delegation_pending:{ owner:true }
+  },
+  binding: {
+    needs_review:{ amend:true }, provisional_approval:{ amend:true, keep:true },
+    binding:{ amend:true, cap:true }, declined:{ amend:true },
+    deferred:{ amend:true, owner:true }, delegation_pending:{ amend:true, owner:true }
+  },
+  declined: {
+    needs_review:{}, provisional_approval:{ cap:true }, binding:{ cap:true },
+    deferred:{ owner:true }, delegation_pending:{ owner:true }
+  },
+  deferred: {
+    needs_review:{}, provisional_approval:{ cap:true }, binding:{ cap:true },
+    declined:{}, deferred:{ owner:true }, delegation_pending:{ owner:true }
+  },
+  delegation_pending: {
+    needs_review:{}, provisional_approval:{ cap:true }, binding:{ cap:true },
+    declined:{}, deferred:{ owner:true }, delegation_pending:{ owner:true },
+    delegation_confirmed:{ ack:true }
+  },
+  delegation_confirmed: {
+    needs_review:{}, provisional_approval:{ cap:true }, binding:{ cap:true },
+    declined:{}, deferred:{ owner:true }, delegation_pending:{ owner:true }
+  }
 };
-function transitionAllowed(from, to){
-  var allowed = TRANSITIONS[from];
-  return !!allowed && allowed.indexOf(to) >= 0;
+function transitionGate(from, to){
+  var f = TRANSITIONS[from];
+  return (f && f[to]) ? f[to] : null;
+}
+function transitionAllowed(from, to){ return !!transitionGate(from, to); }
+function gateNeeds(gate){
+  var n = [];
+  if (gate.keep)  n.push('the existing reservation is carried across unchanged');
+  if (gate.cap)   n.push('an increase must fit the remaining minutes');
+  if (gate.amend) n.push('a leader-approved amendment');
+  if (gate.owner) n.push('an owner and a review date');
+  if (gate.ack)   n.push('an explicit acknowledgement');
+  return n;
 }
 function currentStateOf(state, runId, requestId){
   var d = getRun(state, runId).decisions[requestId];
@@ -1271,58 +1351,109 @@ function currentReservationFor(state, runId, requestId){
   return d && stateReserves(d.state) ? d.minutes : 0;
 }
 
-/* Validate a proposed decision. Returns a list of plain-language errors;
-   an empty list means it may be applied. */
+/* What this transition would actually reserve, after the table's rules.
+   A "keep" transition carries the previous reservation across unchanged,
+   so a conversion can never reserve the same minutes twice. */
+function plannedReservation(state, runId, proposal){
+  var target = STATES[proposal.state];
+  if (!target || !target.reserves) return 0;
+  var from = currentStateOf(state, runId, proposal.requestId);
+  var gate = transitionGate(from, proposal.state);
+  if (gate && gate.keep) return currentReservationFor(state, runId, proposal.requestId);
+  return Number(proposal.minutes);
+}
+
+/* Validate a proposed decision against the agreed table. Returns a list of
+   plain-language errors; an empty list means it may be applied. */
 function validateDecision(state, runId, proposal){
   var errors = [];
   var request = getRequestById(state, proposal.requestId);
-  if (!request){ return [{ field:'requestId', message:'That request is not in the current records.' }]; }
-  if (!isReleased(state, runId, request)){
-    return [{ field:'requestId', message:'That request has not been released yet.' }];
-  }
+  if (!request) return [{ field:'requestId', message:'That request is not in the current records.' }];
+  if (!isReleased(state, runId, request)) return [{ field:'requestId', message:'That request has not been released yet.' }];
+
   var target = STATES[proposal.state];
-  if (!target){ errors.push({ field:'state', message:'Unknown decision "' + proposal.state + '".' }); return errors; }
-  if (!target.implemented){
-    errors.push({ field:'state', message:'"' + target.label + '" is not implemented yet, so it cannot be recorded.' });
-    return errors;
-  }
+  if (!target) return [{ field:'state', message:'Unknown decision "' + proposal.state + '".' }];
+
   var from = currentStateOf(state, runId, proposal.requestId);
-  if (!transitionAllowed(from, proposal.state)){
-    errors.push({ field:'state', message:'Cannot go from "' + STATES[from].label + '" to "' + target.label + '".' });
+  var gate = transitionGate(from, proposal.state);
+  if (!gate){
+    return [{ field:'state', message:'Cannot go from "' + STATES[from].label + '" to "' + target.label + '". ' +
+      (proposal.state === 'delegation_confirmed'
+        ? 'A delegation can only be confirmed from "Delegation pending", so that a real acknowledgement exists.'
+        : 'That move is not in the transition table.') }];
   }
   if (isBlank(proposal.reason)){
-    errors.push({ field:'reason', message:'A reason is required. It must link the evidence or a capacity limit to a trade-off.' });
+    errors.push({ field:'reason', message:'A reason is required. It must link the evidence, or a capacity limit, to a trade-off.' });
   }
-  var minutes = 0;
-  if (target.reserves){
-    minutes = Number(proposal.minutes);
+  /* Duration, and the capacity check on the increase only. */
+  if (target.reserves && !gate.keep){
+    var minutes = Number(proposal.minutes);
     if (!isFinite(minutes) || Math.floor(minutes) !== minutes || minutes <= 0){
       errors.push({ field:'minutes', message:'Duration must be a whole number of minutes above zero.' });
     } else if (minutes > MAX_DECISION_MINUTES){
       errors.push({ field:'minutes', message:'Duration above ' + MAX_DECISION_MINUTES + ' minutes looks like a slip; please check it.' });
-    } else {
+    }
+  }
+  if (!errors.length || !errors.some(function(e){ return e.field === 'minutes'; })){
+    var planned = plannedReservation(state, runId, proposal);
+    var held = currentReservationFor(state, runId, proposal.requestId);
+    var delta = planned - held;
+    if (delta > 0){
       var cap = computeCapacity(state, runId, request.batch);
-      var held = currentReservationFor(state, runId, proposal.requestId);
-      var delta = minutes - held;
-      if (delta > 0 && delta > cap.remaining){
+      if (delta > cap.remaining){
         if (cap.deficit){
           errors.push({ field:'minutes', message:'Batch ' + request.batch + ' is ' + Math.abs(cap.remaining) +
-            ' minutes over capacity. While it is in deficit no new or increased reservation can be made. Release or reduce a reservation first.' });
+            ' minutes over capacity. While it is in deficit, no new or increased reservation can be made. Release or reduce a reservation first, or report an off-record promise, which is a record of something already promised rather than a new approval.' });
         } else {
-          errors.push({ field:'minutes', message:'This needs ' + delta + ' more minutes than batch ' + request.batch +
-            ' has left (' + cap.remaining + ' remaining). Reduce the duration, or release another reservation first.' });
+          errors.push({ field:'minutes', message:'This reserves ' + delta + ' more minutes, but batch ' + request.batch +
+            ' has only ' + cap.remaining + ' left — ' + (delta - cap.remaining) + ' minutes short. Reduce the duration, or release another reservation first.' });
         }
       }
     }
   }
+  /* Conditional requirements carried by the gates. */
+  if (gate.owner){
+    if (isBlank(proposal.owner)) errors.push({ field:'owner', message:'Record who owns this next, by name.' });
+    if (isBlank(proposal.reviewDate)) errors.push({ field:'reviewDate', message:'Record the date this must be looked at again.' });
+    else if (!isIsoDate(proposal.reviewDate)) errors.push({ field:'reviewDate', message:'Review date must be a real date.' });
+  }
+  if (gate.ack){
+    if (isBlank(proposal.ackBy)) errors.push({ field:'ackBy', message:'Record who acknowledged the delegation.' });
+    if (!proposal.ackConfirmed) errors.push({ field:'ackConfirmed', message:'Confirm that the delegate has actually acknowledged this. A delegation is not confirmed until someone says so.' });
+  }
+  if (gate.amend){
+    if (isBlank(proposal.amendApprover)) errors.push({ field:'amendApprover', message:'A binding commitment can only be changed or released with a leader-approved amendment. Record who approved it.' });
+    if (isBlank(proposal.amendApproverRole)) errors.push({ field:'amendApproverRole', message:'Record the role of the person who approved the amendment.' });
+    if (isBlank(proposal.amendReason)) errors.push({ field:'amendReason', message:'Record why the amendment was approved. This is separate from the decision reason.' });
+  }
+  if (proposal.exception && isBlank(proposal.exceptionReason)){
+    errors.push({ field:'exceptionReason', message:'Explain the strategic exception you are recording.' });
+  }
   return errors;
 }
 
-/* ---------- 9a. Applying a decision --------------------------------- */
-/* Mutates state in place after validation, and records append-only
-   history. Idempotent on submissionId so a double-click cannot record
-   the same action twice. Two different requests whose text happens to
-   match get different submission IDs, so they are never merged. */
+function buildEvidenceSnapshot(state, runId, request){
+  var identity = resolveIdentity(state, runId, request);
+  var noteIds = [];
+  if (identity.status === 'established'){
+    var retrieved = getRetrievedSourceIds(state, identity.contactId);
+    var ns = getNotesForContact(state, identity.contactId);
+    for (var n = 0; n < ns.length; n++) if (retrieved[ns[n].note_id]) noteIds.push(ns[n].note_id);
+  }
+  return {
+    askText: request.ask_text,
+    minutesRequested: Number(request.minutes_requested),
+    identityStatus: identity.status,
+    contactId: identity.contactId,
+    sourceNoteIds: noteIds
+  };
+}
+
+/* Apply a decision. Validated first, then written, with append-only
+   history. Idempotent on submissionId, so a double-click cannot record the
+   same action twice. Submission IDs are made when a form opens, never
+   derived from text, so two different requests are never merged because
+   their wording matches. */
 function applyDecision(state, runId, proposal){
   var run = getRun(state, runId);
   if (proposal.submissionId){
@@ -1336,18 +1467,13 @@ function applyDecision(state, runId, proposal){
   if (errors.length) return { ok:false, idempotent:false, errors:errors, decision:null };
 
   var request = getRequestById(state, proposal.requestId);
-  var identity = resolveIdentity(state, runId, request);
+  var from = currentStateOf(state, runId, proposal.requestId);
+  var gate = transitionGate(from, proposal.state);
   var previous = run.decisions[proposal.requestId] || null;
-  var target = STATES[proposal.state];
-  var releasedMinutes = 0;
-  if (previous && stateReserves(previous.state) && !target.reserves) releasedMinutes = previous.minutes;
+  var held = currentReservationFor(state, runId, proposal.requestId);
+  var planned = plannedReservation(state, runId, proposal);
+  var released = held > planned ? held - planned : 0;
 
-  var noteIds = [];
-  if (identity.status === 'established'){
-    var retrieved = getRetrievedSourceIds(state, identity.contactId);
-    var ns = getNotesForContact(state, identity.contactId);
-    for (var n = 0; n < ns.length; n++) if (retrieved[ns[n].note_id]) noteIds.push(ns[n].note_id);
-  }
   var decision = {
     decisionId: uid('DEC'),
     submissionId: proposal.submissionId || uid('SUB'),
@@ -1355,33 +1481,192 @@ function applyDecision(state, runId, proposal){
     requestId: proposal.requestId,
     batch: request.batch,
     state: proposal.state,
-    minutes: target.reserves ? Number(proposal.minutes) : 0,
+    minutes: planned,
     reason: String(proposal.reason).trim(),
     actorRole: proposal.actorRole || 'unspecified',
     at: nowIso(),
+    origin: 'decision',
+    promiseId: null,
     /* Frozen inputs behind the decision. Later edits never rewrite these. */
     priorityVersion: getCurrentPriorityVersion(state).version,
     snapshotId: state.activeSnapshotId,
-    evidenceSnapshot: {
-      askText: request.ask_text,
-      minutesRequested: Number(request.minutes_requested),
-      identityStatus: identity.status,
-      contactId: identity.contactId,
-      sourceNoteIds: noteIds
-    },
+    evidenceSnapshot: buildEvidenceSnapshot(state, runId, request),
     supersedes: previous ? previous.decisionId : null,
-    releasedMinutes: releasedMinutes
+    releasedMinutes: released,
+    carriedReservation: !!gate.keep,
+    owner: gate.owner ? { name:String(proposal.owner).trim(), reviewDate:String(proposal.reviewDate).trim() } : null,
+    acknowledgement: gate.ack ? { by:String(proposal.ackBy).trim(), at:nowIso() } : null,
+    amendment: gate.amend ? {
+      approver: String(proposal.amendApprover).trim(),
+      approverRole: String(proposal.amendApproverRole).trim(),
+      reason: String(proposal.amendReason).trim(),
+      simulated: true
+    } : null,
+    exception: proposal.exception ? { explanation:String(proposal.exceptionReason).trim() } : null
   };
   run.decisions[proposal.requestId] = decision;
   run.history.push({
     eventId: uid('EV'), at: decision.at, type: 'decision_recorded',
     submissionId: decision.submissionId, runId: run.runId, requestId: decision.requestId,
-    from: previous ? previous.state : 'needs_review', to: decision.state,
-    minutes: decision.minutes, releasedMinutes: releasedMinutes,
-    reason: decision.reason, actorRole: decision.actorRole, decisionId: decision.decisionId
+    from: from, to: decision.state, minutes: decision.minutes, releasedMinutes: released,
+    carried: !!gate.keep, reason: decision.reason, actorRole: decision.actorRole,
+    decisionId: decision.decisionId, amendment: decision.amendment, owner: decision.owner,
+    acknowledgement: decision.acknowledgement, exception: decision.exception
   });
   state.updatedAt = nowIso();
-  return { ok:true, idempotent:false, errors:[], decision:decision };
+  return { ok:true, idempotent:false, errors:[], decision:decision, released:released, carried:!!gate.keep };
+}
+
+/* ---------- 5b. Off-record promises --------------------------------- */
+/* Reporting an existing promise is NOT an approval. It records something
+   the leader already promised elsewhere, so it is never blocked by
+   capacity and may put a batch into deficit. */
+function findPromise(state, runId, promiseId){
+  var ps = getRun(state, runId).offRecordPromises;
+  for (var i = 0; i < ps.length; i++) if (ps[i].promiseId === promiseId) return ps[i];
+  return null;
+}
+function validatePromise(state, runId, p){
+  var errors = [], run = getRun(state, runId);
+  var id = String(p.promiseId || '').trim();
+  if (isBlank(id)) errors.push({ field:'promiseId', message:'Give the promise an identifier, so it can be referred to later.' });
+  else if (findPromise(state, runId, id)) errors.push({ field:'promiseId', message:'A promise with the identifier "' + id + '" is already recorded in this run.' });
+  if (isBlank(p.description)) errors.push({ field:'description', message:'Describe what was promised.' });
+  if (isBlank(p.reportedByRole)) errors.push({ field:'reportedByRole', message:'Record who reported this promise.' });
+  var m = Number(p.minutes);
+  if (!isFinite(m) || Math.floor(m) !== m || m <= 0) errors.push({ field:'minutes', message:'Minutes must be a whole number above zero.' });
+  else if (m > MAX_DECISION_MINUTES) errors.push({ field:'minutes', message:'Minutes above ' + MAX_DECISION_MINUTES + ' looks like a slip; please check it.' });
+  var batch = p.batch;
+  if (p.linkedRequestId){
+    var req = getRequestById(state, p.linkedRequestId);
+    if (!req) errors.push({ field:'linkedRequestId', message:'That request is not in the current records.' });
+    else if (!isReleased(state, runId, req)) errors.push({ field:'linkedRequestId', message:'That request has not been released yet.' });
+    else {
+      batch = req.batch;
+      if (currentStateOf(state, runId, p.linkedRequestId) === 'binding'){
+        errors.push({ field:'linkedRequestId', message: p.linkedRequestId + ' is already recorded as binding. Changing a binding commitment needs a leader-approved amendment on the request itself, so reporting a promise against it is refused here.' });
+      }
+    }
+  }
+  if (batch !== 'A' && batch !== 'B') errors.push({ field:'batch', message:'Choose which batch these minutes come out of.' });
+  return errors;
+}
+function reportPromise(state, runId, p){
+  var run = getRun(state, runId);
+  if (p.submissionId){
+    for (var i = 0; i < run.history.length; i++){
+      if (run.history[i].submissionId === p.submissionId){
+        return { ok:true, idempotent:true, errors:[], promise:findPromise(state, runId, String(p.promiseId || '').trim()) };
+      }
+    }
+  }
+  var errors = validatePromise(state, runId, p);
+  if (errors.length) return { ok:false, idempotent:false, errors:errors, promise:null };
+
+  var linked = p.linkedRequestId ? getRequestById(state, p.linkedRequestId) : null;
+  var batch = linked ? linked.batch : p.batch;
+  var minutes = Number(p.minutes);
+  var promise = {
+    promiseId: String(p.promiseId).trim(),
+    submissionId: p.submissionId || uid('SUB'),
+    batch: batch, minutes: minutes,
+    description: String(p.description).trim(),
+    reportedByRole: String(p.reportedByRole).trim(),
+    linkedRequestId: linked ? linked.request_id : null,
+    active: true, at: nowIso(), releasedAt: null, releaseReason: null
+  };
+  run.offRecordPromises.push(promise);
+
+  var previouslyHeld = 0, fromState = null;
+  if (linked){
+    /* Linked: the reservation moves onto the request as a binding
+       commitment, and the promise itself then contributes nothing. That is
+       how a promise matching an existing provisional reservation converts
+       instead of reserving twice. */
+    previouslyHeld = currentReservationFor(state, runId, linked.request_id);
+    var prev = run.decisions[linked.request_id] || null;
+    fromState = prev ? prev.state : 'needs_review';
+    run.decisions[linked.request_id] = {
+      decisionId: uid('DEC'), submissionId: promise.submissionId, runId: run.runId,
+      requestId: linked.request_id, batch: batch, state: 'binding', minutes: minutes,
+      reason: 'Reported as an existing off-record promise (' + promise.promiseId + '): ' + promise.description,
+      actorRole: promise.reportedByRole, at: promise.at,
+      origin: 'off_record_promise', promiseId: promise.promiseId,
+      priorityVersion: getCurrentPriorityVersion(state).version,
+      snapshotId: state.activeSnapshotId,
+      evidenceSnapshot: buildEvidenceSnapshot(state, runId, linked),
+      supersedes: prev ? prev.decisionId : null,
+      releasedMinutes: previouslyHeld > minutes ? previouslyHeld - minutes : 0,
+      carriedReservation: false, owner:null, acknowledgement:null, amendment:null, exception:null
+    };
+  }
+  run.history.push({
+    eventId: uid('EV'), at: promise.at, type: 'promise_reported',
+    submissionId: promise.submissionId, runId: run.runId,
+    promiseId: promise.promiseId, requestId: promise.linkedRequestId, batch: batch,
+    minutes: minutes, linked: !!linked, from: fromState,
+    previouslyHeld: previouslyHeld,
+    netMinutes: linked ? (minutes - previouslyHeld) : minutes,
+    reason: promise.description, actorRole: promise.reportedByRole
+  });
+  state.updatedAt = nowIso();
+  return { ok:true, idempotent:false, errors:[], promise:promise, netMinutes: linked ? (minutes - previouslyHeld) : minutes };
+}
+/* Releasing a promise frees its minutes. A linked promise's minutes sit on
+   the request as a binding commitment, so releasing it there needs the
+   leader-approved amendment instead. */
+function releasePromise(state, runId, promiseId, reason, submissionId){
+  var run = getRun(state, runId);
+  if (submissionId){
+    for (var i = 0; i < run.history.length; i++) if (run.history[i].submissionId === submissionId) return { ok:true, idempotent:true, errors:[] };
+  }
+  var promise = findPromise(state, runId, promiseId);
+  var errors = [];
+  if (!promise) errors.push({ field:'promiseId', message:'No promise with that identifier is recorded in this run.' });
+  else if (!promise.active) errors.push({ field:'promiseId', message:'That promise has already been released.' });
+  else if (promise.linkedRequestId){
+    errors.push({ field:'promiseId', message:'The minutes for this promise sit on request ' + promise.linkedRequestId +
+      ' as a binding commitment. Release them there with a leader-approved amendment.' });
+  }
+  if (isBlank(reason)) errors.push({ field:'reason', message:'Record why this promise is being released.' });
+  if (errors.length) return { ok:false, idempotent:false, errors:errors };
+  promise.active = false;
+  promise.releasedAt = nowIso();
+  promise.releaseReason = String(reason).trim();
+  run.history.push({
+    eventId: uid('EV'), at: promise.releasedAt, type: 'promise_released',
+    submissionId: submissionId || uid('SUB'), runId: run.runId, promiseId: promise.promiseId,
+    batch: promise.batch, minutes: 0, releasedMinutes: promise.minutes,
+    reason: promise.releaseReason, actorRole: 'operator'
+  });
+  state.updatedAt = nowIso();
+  return { ok:true, idempotent:false, errors:[] };
+}
+
+/* ---------- 5c. Explicit human policy change ------------------------- */
+/* Nothing else in this application creates a priority version. Routine
+   amendments and strategic exceptions never do. */
+function recordPolicyVersion(state, p){
+  var errors = [];
+  var version = String(p.version || '').trim();
+  if (isBlank(version)) errors.push({ field:'version', message:'Give the new priority version a label.' });
+  else {
+    var all = getAllPriorityVersions(state);
+    for (var i = 0; i < all.length; i++) if (all[i].version === version) errors.push({ field:'version', message:'Version "' + version + '" already exists.' });
+  }
+  if (isBlank(p.summary)) errors.push({ field:'summary', message:'Summarise what changed in the priorities.' });
+  if (isBlank(p.effectiveDate)) errors.push({ field:'effectiveDate', message:'Record the date this takes effect.' });
+  else if (!isIsoDate(p.effectiveDate)) errors.push({ field:'effectiveDate', message:'Effective date must be a real date.' });
+  if (errors.length) return { ok:false, errors:errors };
+  if (!state.policyVersions) state.policyVersions = [];
+  state.policyVersions.push({
+    version: version, effective_date: String(p.effectiveDate).trim(),
+    summary: String(p.summary).trim(), actorRole: p.actorRole || 'unspecified', at: nowIso()
+  });
+  state.history.push({ eventId: uid('EV'), at: nowIso(), type:'policy_version_recorded',
+    detail: 'Priority version ' + version + ' recorded by ' + (p.actorRole || 'unspecified') + '.' });
+  state.updatedAt = nowIso();
+  return { ok:true, errors:[] };
 }
 
 /* ---------- 6. CSV parsing and dataset validation -------------------- */
@@ -1692,6 +1977,7 @@ function createInitialState(){
       data: deepClone(DEMO_DATA)
     }],
     activeSnapshotId: snapshotId,
+    policyVersions: [],
     runs: { 'RUN-1': createRun('RUN-1', 'Run 1') },
     activeRunId: 'RUN-1',
     ui: { batch: 'A', selectedRequestId: null, role: 'Executive assistant' },
@@ -1791,9 +2077,13 @@ function notice(kind, title, body){ App.lastNotice = { kind:kind, title:title, b
 function render(){
   renderAlerts();
   renderCapacity();
+  renderDeficit();
   renderRequestList();
   renderEvidence();
   renderDecisionForm();
+  renderReservations();
+  renderPromisePanel();
+  renderPolicyPanel();
   renderHistory();
   renderSummary();
   renderTech();
@@ -1827,6 +2117,60 @@ function renderAlerts(){
     if (App.lastNotice.body) n.appendChild(el('div', null, App.lastNotice.body));
     host.appendChild(n);
   }
+}
+
+function fieldText(host, id, labelText, value, oninput, type, hint){
+  var l = el('label', 'lab', labelText); l.setAttribute('for', id); host.appendChild(l);
+  var i = document.createElement('input');
+  i.type = type || 'text'; i.id = id; i.value = value === undefined || value === null ? '' : value;
+  i.addEventListener('input', function(){ oninput(i.value); });
+  host.appendChild(i);
+  if (hint) host.appendChild(el('p', 'small muted', hint));
+  return i;
+}
+function fieldArea(host, id, labelText, value, oninput, hint){
+  var l = el('label', 'lab', labelText); l.setAttribute('for', id); host.appendChild(l);
+  var t = document.createElement('textarea');
+  t.id = id; t.value = value || '';
+  t.addEventListener('input', function(){ oninput(t.value); });
+  host.appendChild(t);
+  if (hint) host.appendChild(el('p', 'small muted', hint));
+  return t;
+}
+function errorBox(host, errors, lead){
+  if (!errors || !errors.length) return;
+  var box = el('div', 'errs');
+  box.appendChild(el('strong', null, lead || 'Not recorded:'));
+  var ul = el('ul');
+  for (var i = 0; i < errors.length; i++) ul.appendChild(el('li', null, errors[i].message));
+  box.appendChild(ul);
+  host.appendChild(box);
+}
+
+/* A deficit is shown plainly, with what it blocks and what still works. */
+function renderDeficit(){
+  var host = document.getElementById('deficitRegion');
+  clear(host);
+  var state = App.state, runId = state.activeRunId;
+  ['A','B'].forEach(function(batch){
+    var cap = computeCapacity(state, runId, batch);
+    if (!cap.deficit) return;
+    var b = el('div', 'banner stop');
+    b.appendChild(el('strong', null, 'Batch ' + batch + ' is ' + Math.abs(cap.remaining) + ' minutes over capacity (' +
+      cap.reserved + ' reserved against ' + cap.base + ' available).'));
+    b.appendChild(el('div', null, 'While this batch is in deficit, no new approval and no increase to an existing reservation can be recorded. ' +
+      'The blocked minutes are already promised, so approving more would promise time that does not exist.'));
+    b.appendChild(el('div', null, 'Still available: declining, deferring, delegating, releasing or reducing a reservation, and reporting an off-record promise — a promise is a record of something already committed, not a new approval.'));
+    var row = el('div', 'row');
+    var go = el('button', null, 'Open reconciliation');
+    go.addEventListener('click', function(){
+      document.getElementById('secReserve').open = true;
+      document.getElementById('secReserve').scrollIntoView({ block:'start' });
+    });
+    row.appendChild(go);
+    b.appendChild(row);
+    host.appendChild(b);
+  });
 }
 
 function renderCapacity(){
@@ -2057,6 +2401,23 @@ function renderEvidence(){
   host.appendChild(s6);
 }
 
+function blankDraft(state, runId, request){
+  var existing = getRun(state, runId).decisions[request.request_id];
+  return {
+    requestId: request.request_id,
+    submissionId: uid('SUB'),
+    state: '',
+    minutes: existing && existing.minutes ? String(existing.minutes) : String(request.minutes_requested),
+    reason: '',
+    owner: existing && existing.owner ? existing.owner.name : '',
+    reviewDate: existing && existing.owner ? existing.owner.reviewDate : '',
+    ackBy: '', ackConfirmed: false,
+    amendApprover: '', amendApproverRole: 'Leader (simulated)', amendReason: '',
+    exception: false, exceptionReason: '',
+    errors: []
+  };
+}
+
 function renderDecisionForm(){
   var host = document.getElementById('decisionBody');
   clear(host);
@@ -2068,84 +2429,142 @@ function renderDecisionForm(){
 
   var from = currentStateOf(state, runId, id);
   var existing = getRun(state, runId).decisions[id];
-  if (!App.formDraft || App.formDraft.requestId !== id){
-    App.formDraft = {
-      requestId: id,
-      submissionId: uid('SUB'),
-      state: existing ? existing.state : '',
-      minutes: existing && existing.minutes ? String(existing.minutes) : String(r.minutes_requested),
-      reason: '',
-      errors: []
-    };
-  }
+  if (!App.formDraft || App.formDraft.requestId !== id) App.formDraft = blankDraft(state, runId, r);
   var draft = App.formDraft;
 
-  host.appendChild(el('p', 'small muted', 'Current: ' + STATES[from].label +
-    (existing ? ' · ' + existing.minutes + ' min reserved · recorded ' + fmtStamp(existing.at) : '')));
+  /* Where this request stands now. */
+  var cur = el('div', 'rec');
+  var ch = el('div', 'rhead');
+  ch.appendChild(el('span', 'pill' + (stateReserves(from) ? ' good' : ''), STATES[from].label));
+  if (existing && existing.minutes) ch.appendChild(el('span', null, existing.minutes + ' min reserved'));
+  if (existing) ch.appendChild(el('span', null, 'recorded ' + fmtStamp(existing.at)));
+  cur.appendChild(ch);
+  if (existing && existing.origin === 'off_record_promise'){
+    cur.appendChild(el('p', 'small', 'Recorded by reporting off-record promise ' + existing.promiseId + ', not by an approval made here.'));
+  }
+  if (existing && existing.owner){
+    cur.appendChild(el('p', 'small', 'Owner: ' + existing.owner.name + ' · review by ' + existing.owner.reviewDate));
+  }
+  if (existing && existing.amendment){
+    cur.appendChild(el('p', 'small', 'Last amendment approved by ' + existing.amendment.approver + ' (' + existing.amendment.approverRole + '): ' + existing.amendment.reason));
+  }
+  if (existing && existing.acknowledgement){
+    cur.appendChild(el('p', 'small', 'Acknowledged by ' + existing.acknowledgement.by + ' on ' + fmtStamp(existing.acknowledgement.at)));
+  }
+  host.appendChild(cur);
 
   var fs = el('fieldset');
   fs.appendChild(el('legend', null, 'Action'));
   for (var i = 0; i < STATE_ORDER.length; i++){
     (function(name){
       var meta = STATES[name];
-      if (name === 'needs_review' && from === 'needs_review') return;   /* already there */
-      var allowed = meta.implemented && transitionAllowed(from, name);
+      var gate = transitionGate(from, name);
+      var allowed = !!gate;
+      if (name === from && !allowed) return;
       var row = el('div', 'opt' + (allowed ? '' : ' off'));
       var input = document.createElement('input');
-      input.type = 'radio'; input.name = 'act'; input.value = name;
-      input.id = 'act_' + name;
+      input.type = 'radio'; input.name = 'act'; input.value = name; input.id = 'act_' + name;
       input.disabled = !allowed;
       input.checked = draft.state === name;
-      input.addEventListener('change', function(){ draft.state = name; renderDecisionForm(); });
+      input.addEventListener('change', function(){ draft.state = name; draft.errors = []; renderDecisionForm(); });
       var lab = document.createElement('label');
       lab.setAttribute('for', 'act_' + name);
-      lab.appendChild(document.createTextNode(meta.label + (meta.reserves ? ' (reserves minutes)' : ' (reserves no minutes)')));
-      if (!meta.implemented) lab.appendChild(el('span', 'ohint', 'Not available yet. ' + meta.why));
-      else if (!allowed) lab.appendChild(el('span', 'ohint', 'Not a permitted move from "' + STATES[from].label + '".'));
+      lab.appendChild(document.createTextNode(meta.label + (name === from ? ' — amend' : '') +
+        (meta.reserves ? ' (reserves minutes)' : ' (reserves no minutes)')));
+      if (allowed){
+        var needs = gateNeeds(gate);
+        if (needs.length) lab.appendChild(el('span', 'ohint', 'Needs ' + needs.join(', ') + '.'));
+      } else {
+        lab.appendChild(el('span', 'ohint', name === 'delegation_confirmed'
+          ? 'Only reachable from "Delegation pending", so that a real acknowledgement exists.'
+          : 'Not a permitted move from "' + STATES[from].label + '".'));
+      }
       row.appendChild(input); row.appendChild(lab);
       fs.appendChild(row);
     })(STATE_ORDER[i]);
   }
   host.appendChild(fs);
 
-  if (draft.state && STATES[draft.state] && STATES[draft.state].reserves){
-    var labM = el('label', 'lab', 'Minutes to reserve');
-    labM.setAttribute('for', 'minutesIn');
-    host.appendChild(labM);
-    var mi = document.createElement('input');
-    mi.type = 'number'; mi.id = 'minutesIn'; mi.min = '1'; mi.step = '1'; mi.value = draft.minutes;
-    mi.addEventListener('input', function(){ draft.minutes = mi.value; });
-    host.appendChild(mi);
-    var cap = computeCapacity(state, runId, r.batch);
-    var held = currentReservationFor(state, runId, id);
-    host.appendChild(el('p', 'small muted', 'Requested ' + r.minutes_requested + '. Batch ' + r.batch + ' has ' + cap.remaining +
-      ' minutes left' + (held ? ', of which this request already holds ' + held + '.' : '.')));
+  var gate = draft.state ? transitionGate(from, draft.state) : null;
+  var target = draft.state ? STATES[draft.state] : null;
+
+  if (gate && target && target.reserves){
+    if (gate.keep){
+      var kept = currentReservationFor(state, runId, id);
+      var box = el('div', 'banner ok');
+      box.appendChild(el('strong', null, 'Reservation carried across unchanged: ' + kept + ' minutes.'));
+      box.appendChild(el('div', null, 'Converting does not reserve the minutes a second time, and no capacity is used. To change the duration, amend the current state first, then convert.'));
+      host.appendChild(box);
+    } else {
+      fieldText(host, 'minutesIn', 'Minutes to reserve', draft.minutes, function(v){ draft.minutes = v; }, 'number');
+      var cap = computeCapacity(state, runId, r.batch);
+      var held = currentReservationFor(state, runId, id);
+      host.appendChild(el('p', 'small muted', 'Requested ' + r.minutes_requested + '. Batch ' + r.batch + ' has ' + cap.remaining +
+        ' minutes left' + (held ? ', of which this request already holds ' + held + '. Only the increase is checked against capacity.' : '.')));
+    }
+  }
+  if (gate && gate.owner){
+    fieldText(host, 'ownerIn', 'Owner (required)', draft.owner, function(v){ draft.owner = v; }, 'text',
+      'Who holds this next. It stays visible and unresolved until someone moves it on.');
+    fieldText(host, 'reviewDateIn', 'Review by (required)', draft.reviewDate, function(v){ draft.reviewDate = v; }, 'date');
+  }
+  if (gate && gate.ack){
+    fieldText(host, 'ackByIn', 'Acknowledged by (required)', draft.ackBy, function(v){ draft.ackBy = v; }, 'text');
+    var ackRow = el('div', 'opt');
+    var ackIn = document.createElement('input');
+    ackIn.type = 'checkbox'; ackIn.id = 'ackConfirmIn'; ackIn.checked = !!draft.ackConfirmed;
+    ackIn.addEventListener('change', function(){ draft.ackConfirmed = ackIn.checked; });
+    var ackLab = document.createElement('label');
+    ackLab.setAttribute('for', 'ackConfirmIn');
+    ackLab.appendChild(document.createTextNode('I confirm the delegate has acknowledged this.'));
+    ackLab.appendChild(el('span', 'ohint', 'A delegation stays pending until someone confirms an acknowledgement actually happened.'));
+    ackRow.appendChild(ackIn); ackRow.appendChild(ackLab);
+    host.appendChild(ackRow);
+  }
+  if (gate && gate.amend){
+    var warn = el('div', 'banner warn');
+    warn.appendChild(el('strong', null, 'This changes or releases a binding commitment.'));
+    warn.appendChild(el('div', null, 'It needs a leader-approved amendment. An ordinary edit cannot do this. The approval recorded here is simulated for the demonstration; nobody is contacted.'));
+    host.appendChild(warn);
+    fieldText(host, 'amendApproverIn', 'Amendment approved by (required)', draft.amendApprover, function(v){ draft.amendApprover = v; });
+    fieldText(host, 'amendRoleIn', 'Approver role (required)', draft.amendApproverRole, function(v){ draft.amendApproverRole = v; });
+    fieldArea(host, 'amendReasonIn', 'Why the amendment was approved (required)', draft.amendReason, function(v){ draft.amendReason = v; },
+      'Separate from the decision reason below.');
   }
 
-  var labR = el('label', 'lab', 'Reason (required)');
-  labR.setAttribute('for', 'reasonIn');
-  host.appendChild(labR);
-  var ta = document.createElement('textarea');
-  ta.id = 'reasonIn'; ta.value = draft.reason;
-  ta.placeholder = 'Link the evidence, or the capacity limit, to the trade-off you are making.';
-  ta.addEventListener('input', function(){ draft.reason = ta.value; });
-  host.appendChild(ta);
-  host.appendChild(el('p', 'small muted', 'Prompts to consider: why the leader rather than someone else; why now rather than later; what this displaces. Fuller prompts and optional wording chips are added in Step 4.'));
+  fieldArea(host, 'reasonIn', 'Reason (required)', draft.reason, function(v){ draft.reason = v; },
+    'Link the evidence, or the capacity limit, to the trade-off you are making. Prompts to consider: why the leader rather than someone else; why now rather than later; what this displaces. Fuller prompts and optional wording chips are added in Step 4.');
 
-  if (draft.errors && draft.errors.length){
-    var box = el('div', 'errs');
-    box.appendChild(el('strong', null, 'Not recorded:'));
-    var ul = el('ul');
-    for (var e = 0; e < draft.errors.length; e++) ul.appendChild(el('li', null, draft.errors[e].message));
-    box.appendChild(ul);
-    host.appendChild(box);
+  var exRow = el('div', 'opt');
+  var exIn = document.createElement('input');
+  exIn.type = 'checkbox'; exIn.id = 'exceptionIn'; exIn.checked = !!draft.exception;
+  exIn.addEventListener('change', function(){ draft.exception = exIn.checked; renderDecisionForm(); });
+  var exLab = document.createElement('label');
+  exLab.setAttribute('for', 'exceptionIn');
+  exLab.appendChild(document.createTextNode('Record this as a strategic exception'));
+  exLab.appendChild(el('span', 'ohint', 'Recorded on this decision only. It does not change policy and does not create a new priority version.'));
+  exRow.appendChild(exIn); exRow.appendChild(exLab);
+  host.appendChild(exRow);
+  if (draft.exception){
+    fieldArea(host, 'exceptionReasonIn', 'Explain the exception (required)', draft.exceptionReason, function(v){ draft.exceptionReason = v; });
   }
+
+  errorBox(host, draft.errors);
 
   var row2 = el('div', 'btnrow');
   var save = el('button', 'primary', 'Save decision');
   save.id = 'saveDecision';
   save.addEventListener('click', submitDecision);
   row2.appendChild(save);
+  var pb = el('button', null, 'Report an off-record promise…');
+  pb.id = 'openPromise';
+  pb.addEventListener('click', function(){
+    App.promiseDraft = null;
+    App.promiseLinkPreset = id;
+    var d = document.getElementById('secPromise');
+    d.open = true; render(); d.scrollIntoView({ block:'start' });
+  });
+  row2.appendChild(pb);
   host.appendChild(row2);
   host.appendChild(el('p', 'small muted', 'Recorded as: ' + state.ui.role + ' (simulated role, not real authorisation). Priority version ' +
     getCurrentPriorityVersion(state).version + '.'));
@@ -2161,6 +2580,10 @@ function submitDecision(){
   var proposal = {
     requestId: draft.requestId, submissionId: draft.submissionId,
     state: draft.state, minutes: draft.minutes, reason: draft.reason,
+    owner: draft.owner, reviewDate: draft.reviewDate,
+    ackBy: draft.ackBy, ackConfirmed: draft.ackConfirmed,
+    amendApprover: draft.amendApprover, amendApproverRole: draft.amendApproverRole, amendReason: draft.amendReason,
+    exception: draft.exception, exceptionReason: draft.exceptionReason,
     actorRole: App.state.ui.role
   };
   var res = applyDecision(App.state, App.state.activeRunId, proposal);
@@ -2169,42 +2592,338 @@ function submitDecision(){
   if (res.idempotent){
     notice('warn', 'Already recorded', 'That same submission was already recorded, so nothing was recorded twice.');
   } else if (saved){
-    notice('ok', 'Decision saved', STATES[res.decision.state].label + ' recorded for ' + res.decision.requestId +
-      (res.decision.minutes ? ', reserving ' + res.decision.minutes + ' minutes.' : ', reserving no minutes.') +
-      (res.decision.releasedMinutes ? ' Released ' + res.decision.releasedMinutes + ' minutes previously reserved.' : ''));
+    var msg = STATES[res.decision.state].label + ' recorded for ' + res.decision.requestId;
+    if (res.carried) msg += ', carrying the same ' + res.decision.minutes + ' minute reservation across without reserving again.';
+    else if (res.decision.minutes) msg += ', reserving ' + res.decision.minutes + ' minutes.';
+    else msg += ', reserving no minutes.';
+    if (res.released) msg += ' Released ' + res.released + ' minutes previously reserved.';
+    notice('ok', 'Decision saved', msg);
   } else {
     notice('stop', 'Recorded in this page only — NOT saved', App.saveMessage + ' Download a backup before refreshing or closing.');
   }
-  /* A fresh submission id, so the next save is a separate action. */
   App.formDraft = null;
   render();
+}
+
+/* ---------- Reservations and reconciliation -------------------------- */
+function renderReservations(){
+  var host = document.getElementById('reserveBody');
+  clear(host);
+  var state = App.state, runId = state.activeRunId, run = getRun(state, runId);
+  host.appendChild(el('p', 'small muted', 'Capacity is worked out from these active reservations only, never from adding up past approvals. Releasing or reducing one here uses the ordinary decision rules, with their approvals intact.'));
+  var any = false;
+  ['A','B'].forEach(function(batch){
+    var cap = computeCapacity(state, runId, batch);
+    var head = el('h4', null, 'Batch ' + batch + ' — ' + cap.reserved + ' reserved of ' + cap.base + ', ' + cap.remaining + ' remaining' + (cap.deficit ? ' (IN DEFICIT)' : ''));
+    host.appendChild(head);
+    var t = el('table', 'grid');
+    var hr = el('tr');
+    ['Holds the minutes','State','Minutes','How to change it'].forEach(function(x){ hr.appendChild(el('th', null, x)); });
+    t.appendChild(hr);
+    var rows = 0, rid;
+    for (rid in run.decisions){
+      var d = run.decisions[rid];
+      if (d.batch !== batch || !stateReserves(d.state)) continue;
+      rows++; any = true;
+      var tr = el('tr');
+      tr.appendChild(el('td', null, d.requestId + (d.origin === 'off_record_promise' ? ' (from promise ' + d.promiseId + ')' : '')));
+      tr.appendChild(el('td', null, STATES[d.state].label));
+      tr.appendChild(el('td', null, String(d.minutes)));
+      var td = el('td');
+      var btn = el('button', null, 'Open this request');
+      (function(reqId, b){ btn.addEventListener('click', function(){ state.ui.batch = b; selectRequest(reqId); window.scrollTo(0,0); }); })(d.requestId, batch);
+      td.appendChild(btn);
+      td.appendChild(el('span', 'ohint', d.state === 'binding'
+        ? 'Binding: reducing or releasing needs a leader-approved amendment.'
+        : 'Provisional: reduce it, or move it to a state that reserves nothing, with a reason.'));
+      tr.appendChild(td);
+      t.appendChild(tr);
+    }
+    for (var i = 0; i < run.offRecordPromises.length; i++){
+      var p = run.offRecordPromises[i];
+      if (p.batch !== batch || !p.active || p.linkedRequestId) continue;
+      rows++; any = true;
+      var tr2 = el('tr');
+      tr2.appendChild(el('td', null, 'Off-record promise ' + p.promiseId));
+      tr2.appendChild(el('td', null, 'Reported promise (not an approval)'));
+      tr2.appendChild(el('td', null, String(p.minutes)));
+      var td2 = el('td');
+      if (!App.releaseDrafts) App.releaseDrafts = {};
+      var rd = App.releaseDrafts[p.promiseId];
+      if (!rd){
+        var rb = el('button', null, 'Release these minutes…');
+        (function(pid){ rb.addEventListener('click', function(){ App.releaseDrafts[pid] = { reason:'', submissionId:uid('SUB'), errors:[] }; render(); }); })(p.promiseId);
+        td2.appendChild(rb);
+      } else {
+        var ta = document.createElement('textarea');
+        ta.id = 'releaseReason_' + p.promiseId;
+        ta.value = rd.reason;
+        ta.placeholder = 'Why is this promise being released?';
+        ta.addEventListener('input', function(){ rd.reason = ta.value; });
+        td2.appendChild(ta);
+        var go = el('button', 'danger', 'Confirm release');
+        go.id = 'confirmRelease_' + p.promiseId;
+        (function(pid, draft){ go.addEventListener('click', function(){
+          var res = releasePromise(App.state, App.state.activeRunId, pid, draft.reason, draft.submissionId);
+          if (!res.ok){ draft.errors = res.errors; render(); return; }
+          delete App.releaseDrafts[pid];
+          persist();
+          notice('ok', 'Promise released', 'The minutes held by promise ' + pid + ' were released.');
+          render();
+        }); })(p.promiseId, rd);
+        td2.appendChild(go);
+        var cn = el('button', null, 'Cancel');
+        (function(pid){ cn.addEventListener('click', function(){ delete App.releaseDrafts[pid]; render(); }); })(p.promiseId);
+        td2.appendChild(cn);
+        errorBox(td2, rd.errors, 'Not released:');
+      }
+      tr2.appendChild(td2);
+      t.appendChild(tr2);
+    }
+    if (!rows){
+      var tr3 = el('tr');
+      var td3 = el('td', null, 'Nothing is reserved in this batch.');
+      td3.colSpan = 4;
+      tr3.appendChild(td3); t.appendChild(tr3);
+    }
+    host.appendChild(t);
+  });
+  if (!any) host.appendChild(el('p', 'small muted', 'No minutes are reserved anywhere in this run.'));
+}
+
+/* ---------- Report an off-record promise ----------------------------- */
+function renderPromisePanel(){
+  var host = document.getElementById('promiseBody');
+  clear(host);
+  var state = App.state, runId = state.activeRunId, run = getRun(state, runId);
+
+  host.appendChild(el('p', null, 'Use this when the leader has already promised time somewhere else and you are recording it here. This is a report of something that already happened, not a new approval.'));
+  host.appendChild(el('p', 'small muted', 'Because it records an existing promise, it is never blocked by capacity and can put a batch into deficit. If it matches a request that already holds a provisional reservation, the reservation is converted rather than counted twice.'));
+
+  if (!App.promiseDraft){
+    App.promiseDraft = {
+      submissionId: uid('SUB'), promiseId: '', description: '', minutes: '',
+      reportedByRole: state.ui.role, linkedRequestId: App.promiseLinkPreset || '', batch: state.ui.batch, errors: []
+    };
+    App.promiseLinkPreset = null;
+  }
+  var d = App.promiseDraft;
+
+  fieldText(host, 'promiseIdIn', 'Promise identifier (required)', d.promiseId, function(v){ d.promiseId = v; }, 'text',
+    'Something you can refer to later, for example "verbal-2026-09-05".');
+  fieldArea(host, 'promiseDescIn', 'What was promised (required)', d.description, function(v){ d.description = v; });
+  fieldText(host, 'promiseMinutesIn', 'Minutes already promised (required)', d.minutes, function(v){ d.minutes = v; }, 'number');
+  fieldText(host, 'promiseRoleIn', 'Reported by (required)', d.reportedByRole, function(v){ d.reportedByRole = v; }, 'text',
+    'The role reporting it. Simulated, not real authorisation.');
+
+  var l = el('label', 'lab', 'Linked request (optional)'); l.setAttribute('for', 'promiseLinkSel');
+  host.appendChild(l);
+  var sel = document.createElement('select');
+  sel.id = 'promiseLinkSel';
+  var o0 = document.createElement('option'); o0.value = ''; o0.textContent = 'Not linked to a request';
+  sel.appendChild(o0);
+  ['A','B'].forEach(function(b){
+    var list = getVisibleRequests(state, runId, b);
+    for (var i = 0; i < list.length; i++){
+      var o = document.createElement('option');
+      o.value = list[i].request_id;
+      o.textContent = list[i].request_id + ' — ' + list[i].requester_name + ' (batch ' + b + ', ' + STATES[currentStateOf(state, runId, list[i].request_id)].label + ')';
+      sel.appendChild(o);
+    }
+  });
+  sel.value = d.linkedRequestId || '';
+  sel.addEventListener('change', function(){ d.linkedRequestId = sel.value; renderPromisePanel(); });
+  host.appendChild(sel);
+
+  if (d.linkedRequestId){
+    var lreq = getRequestById(state, d.linkedRequestId);
+    var lstate = currentStateOf(state, runId, d.linkedRequestId);
+    var held = currentReservationFor(state, runId, d.linkedRequestId);
+    var info = el('div', 'banner ' + (lstate === 'binding' ? 'stop' : 'warn'));
+    if (lstate === 'binding'){
+      info.appendChild(el('strong', null, d.linkedRequestId + ' is already recorded as binding.'));
+      info.appendChild(el('div', null, 'Reporting a promise against it is refused, because that would change a binding duration without a leader-approved amendment. Amend the request itself instead.'));
+    } else {
+      info.appendChild(el('strong', null, 'Linking to ' + d.linkedRequestId + ' (batch ' + lreq.batch + ', currently ' + STATES[lstate].label + ', holding ' + held + ' minutes).'));
+      info.appendChild(el('div', null, held
+        ? 'The existing ' + held + ' minute reservation will be converted to a binding commitment, not counted twice.'
+        : 'The request will become a binding commitment for the promised minutes.'));
+    }
+    host.appendChild(info);
+  } else {
+    var lb = el('label', 'lab', 'Batch these minutes come from'); lb.setAttribute('for', 'promiseBatchSel');
+    host.appendChild(lb);
+    var bs = document.createElement('select');
+    bs.id = 'promiseBatchSel';
+    ['A','B'].forEach(function(b){ var o = document.createElement('option'); o.value = b; o.textContent = 'Batch ' + b; bs.appendChild(o); });
+    bs.value = d.batch;
+    bs.addEventListener('change', function(){ d.batch = bs.value; });
+    host.appendChild(bs);
+  }
+
+  errorBox(host, d.errors, 'Not recorded:');
+
+  var row = el('div', 'btnrow');
+  var go = el('button', 'primary', 'Report promise');
+  go.id = 'btnReportPromise';
+  go.addEventListener('click', function(){
+    var res = reportPromise(App.state, App.state.activeRunId, {
+      submissionId: d.submissionId, promiseId: d.promiseId, description: d.description,
+      minutes: d.minutes, reportedByRole: d.reportedByRole,
+      linkedRequestId: d.linkedRequestId || null, batch: d.batch
+    });
+    if (!res.ok){ d.errors = res.errors; renderPromisePanel(); return; }
+    var saved = persist();
+    if (res.idempotent) notice('warn', 'Already recorded', 'That same submission was already recorded, so nothing was recorded twice.');
+    else notice(saved ? 'ok' : 'stop', saved ? 'Off-record promise recorded' : 'Promise recorded in this page only — NOT saved',
+      'Promise ' + res.promise.promiseId + ' for ' + res.promise.minutes + ' minutes in batch ' + res.promise.batch +
+      (res.promise.linkedRequestId ? ', linked to ' + res.promise.linkedRequestId + ' and converted to a binding commitment. Net change to reserved minutes: ' + res.netMinutes + '.'
+                                   : '. This is a reported promise, not an approval.') + (saved ? '' : ' ' + App.saveMessage));
+    App.promiseDraft = null;
+    render();
+  });
+  row.appendChild(go);
+  host.appendChild(row);
+
+  if (run.offRecordPromises.length){
+    host.appendChild(el('h4', null, 'Promises reported in this run'));
+    var t = el('table', 'grid');
+    var hr = el('tr');
+    ['Id','Batch','Minutes','Linked request','Reported by','State','Description'].forEach(function(x){ hr.appendChild(el('th', null, x)); });
+    t.appendChild(hr);
+    for (var i = 0; i < run.offRecordPromises.length; i++){
+      var p = run.offRecordPromises[i];
+      var tr = el('tr');
+      tr.appendChild(el('td', null, p.promiseId));
+      tr.appendChild(el('td', null, p.batch));
+      tr.appendChild(el('td', null, String(p.minutes)));
+      tr.appendChild(el('td', null, p.linkedRequestId || 'not linked'));
+      tr.appendChild(el('td', null, p.reportedByRole));
+      tr.appendChild(el('td', null, p.active ? (p.linkedRequestId ? 'active, held on the request' : 'active, holding minutes') : 'released: ' + p.releaseReason));
+      tr.appendChild(el('td', null, p.description));
+      t.appendChild(tr);
+    }
+    host.appendChild(t);
+  }
+}
+
+/* ---------- Priorities and explicit policy change -------------------- */
+function renderPolicyPanel(){
+  var host = document.getElementById('policyBody');
+  clear(host);
+  var state = App.state;
+  var all = getAllPriorityVersions(state);
+  var current = all[all.length - 1];
+  host.appendChild(el('p', null, 'Current priority version: ' + current.version + ' (effective ' + current.effective_date + ').'));
+  host.appendChild(el('p', 'small muted', 'Every decision records the version in force at the time. Routine amendments and strategic exceptions are recorded on the decision itself and never create a version. Only an explicit policy change recorded here creates one, and nothing does it automatically.'));
+  var t = el('table', 'grid');
+  var hr = el('tr');
+  ['Version','Effective','Where it came from','Summary'].forEach(function(x){ hr.appendChild(el('th', null, x)); });
+  t.appendChild(hr);
+  for (var i = 0; i < all.length; i++){
+    var tr = el('tr');
+    tr.appendChild(el('td', null, all[i].version + (i === all.length - 1 ? ' (current)' : '')));
+    tr.appendChild(el('td', null, all[i].effective_date));
+    tr.appendChild(el('td', null, all[i].origin));
+    tr.appendChild(el('td', null, all[i].summary));
+    t.appendChild(tr);
+  }
+  host.appendChild(t);
+
+  if (!App.policyDraft) App.policyDraft = { version:'', effectiveDate:'', summary:'', errors:[], open:false };
+  var d = App.policyDraft;
+  if (!d.open){
+    var row = el('div', 'btnrow');
+    var b = el('button', null, 'Record a policy change…');
+    b.id = 'openPolicy';
+    b.addEventListener('click', function(){ d.open = true; renderPolicyPanel(); });
+    row.appendChild(b);
+    host.appendChild(row);
+    return;
+  }
+  host.appendChild(el('h4', null, 'Record an explicit policy change'));
+  host.appendChild(el('p', 'small muted', 'This is a deliberate human change to the priorities. It does not alter any past decision, and it does not change the input records behind them.'));
+  fieldText(host, 'policyVersionIn', 'New version label (required)', d.version, function(v){ d.version = v; });
+  fieldText(host, 'policyDateIn', 'Effective date (required)', d.effectiveDate, function(v){ d.effectiveDate = v; }, 'date');
+  fieldArea(host, 'policySummaryIn', 'What changed (required)', d.summary, function(v){ d.summary = v; });
+  errorBox(host, d.errors, 'Not recorded:');
+  var row2 = el('div', 'btnrow');
+  var go = el('button', 'primary', 'Record policy change');
+  go.id = 'btnPolicySave';
+  go.addEventListener('click', function(){
+    var res = recordPolicyVersion(App.state, { version:d.version, effectiveDate:d.effectiveDate, summary:d.summary, actorRole:App.state.ui.role });
+    if (!res.ok){ d.errors = res.errors; renderPolicyPanel(); return; }
+    App.policyDraft = null;
+    persist();
+    notice('ok', 'Policy change recorded', 'New decisions will record the new priority version. Past decisions keep the version they were made under.');
+    render();
+  });
+  row2.appendChild(go);
+  var cancel = el('button', null, 'Cancel');
+  cancel.addEventListener('click', function(){ App.policyDraft = null; renderPolicyPanel(); });
+  row2.appendChild(cancel);
+  host.appendChild(row2);
 }
 
 function renderHistory(){
   var host = document.getElementById('historyBody');
   clear(host);
   var run = getRun(App.state, App.state.activeRunId);
-  host.appendChild(el('p', 'small muted', 'Append-only within this browser. Entries are added, never edited or removed. This is an ordinary record kept in browser storage; it is not tamper-proof.'));
-  if (!run.history.length){ host.appendChild(el('p', 'muted', 'No decisions recorded yet in this run.')); return; }
+  host.appendChild(el('p', 'small muted', 'Append-only within this browser. Entries are added, never edited or removed, and each decision keeps the inputs it was made on. This is an ordinary record held in browser storage; it is not tamper-proof, and anyone with access to this browser could clear it.'));
+  if (!run.history.length){ host.appendChild(el('p', 'muted', 'Nothing recorded yet in this run.')); return; }
   var t = el('table', 'grid');
   var hr = el('tr');
-  ['When','Request','Change','Minutes','Reason','Recorded by','Priority'].forEach(function(x){ hr.appendChild(el('th', null, x)); });
+  ['When','Kind','Subject','Change','Minutes','Reason','Recorded by','Approvals and conditions','Priority'].forEach(function(x){ hr.appendChild(el('th', null, x)); });
   t.appendChild(hr);
   for (var i = run.history.length - 1; i >= 0; i--){
     var h = run.history[i];
     var d = null, rid;
-    for (rid in run.decisions) if (run.decisions[rid].decisionId === h.decisionId) d = run.decisions[rid];
+    for (rid in run.decisions) if (h.decisionId && run.decisions[rid].decisionId === h.decisionId) d = run.decisions[rid];
     var tr = el('tr');
     tr.appendChild(el('td', null, fmtStamp(h.at)));
-    tr.appendChild(el('td', null, h.requestId));
-    tr.appendChild(el('td', null, STATES[h.from].label + ' → ' + STATES[h.to].label));
-    tr.appendChild(el('td', null, (h.minutes ? '+' + h.minutes : '0') + (h.releasedMinutes ? ' (released ' + h.releasedMinutes + ')' : '')));
-    tr.appendChild(el('td', null, h.reason));
-    tr.appendChild(el('td', null, h.actorRole));
+    tr.appendChild(el('td', null,
+      h.type === 'decision_recorded' ? 'Decision' :
+      h.type === 'promise_reported' ? 'Off-record promise reported' :
+      h.type === 'promise_released' ? 'Off-record promise released' : h.type));
+    tr.appendChild(el('td', null, h.requestId || (h.promiseId ? 'promise ' + h.promiseId : '')));
+    var change = '';
+    if (h.type === 'decision_recorded') change = STATES[h.from].label + ' → ' + STATES[h.to].label;
+    else if (h.type === 'promise_reported') change = h.linked ? (STATES[h.from].label + ' → Binding (via promise)') : 'Recorded against batch ' + h.batch;
+    else if (h.type === 'promise_released') change = 'Minutes released';
+    tr.appendChild(el('td', null, change));
+    var mins = '';
+    if (h.type === 'decision_recorded') mins = (h.carried ? 'carried ' + h.minutes : (h.minutes ? '+' + h.minutes : '0')) + (h.releasedMinutes ? ' (released ' + h.releasedMinutes + ')' : '');
+    else if (h.type === 'promise_reported') mins = 'net ' + (h.netMinutes >= 0 ? '+' : '') + h.netMinutes + (h.linked ? ' (promise ' + h.minutes + ', already held ' + h.previouslyHeld + ')' : '');
+    else if (h.type === 'promise_released') mins = '-' + h.releasedMinutes;
+    tr.appendChild(el('td', null, mins));
+    tr.appendChild(el('td', null, h.reason || ''));
+    tr.appendChild(el('td', null, h.actorRole || ''));
+    var cond = [];
+    if (h.amendment) cond.push('Leader-approved amendment by ' + h.amendment.approver + ' (' + h.amendment.approverRole + '), simulated: ' + h.amendment.reason);
+    if (h.owner) cond.push('Owner ' + h.owner.name + ', review by ' + h.owner.reviewDate);
+    if (h.acknowledgement) cond.push('Acknowledged by ' + h.acknowledgement.by);
+    if (h.exception) cond.push('Strategic exception: ' + h.exception.explanation);
+    if (h.type === 'promise_reported') cond.push('Reported, not approved.');
+    tr.appendChild(el('td', null, cond.join(' · ')));
     tr.appendChild(el('td', null, d ? d.priorityVersion : ''));
     t.appendChild(tr);
   }
   host.appendChild(t);
+  if (App.state.history && App.state.history.length){
+    host.appendChild(el('h4', null, 'Application log'));
+    var t2 = el('table', 'grid');
+    var hr2 = el('tr');
+    ['When','What'].forEach(function(x){ hr2.appendChild(el('th', null, x)); });
+    t2.appendChild(hr2);
+    for (var j = App.state.history.length - 1; j >= 0; j--){
+      var e = App.state.history[j];
+      var r2 = el('tr');
+      r2.appendChild(el('td', null, fmtStamp(e.at)));
+      r2.appendChild(el('td', null, e.detail || e.type));
+      t2.appendChild(r2);
+    }
+    host.appendChild(t2);
+  }
 }
 
 function renderSummary(){
@@ -2216,10 +2935,20 @@ function renderSummary(){
   var visible = getVisibleRequests(state, runId, state.ui.batch);
   for (var v = 0; v < visible.length; v++) counts[currentStateOf(state, runId, visible[v].request_id)]++;
   var cap = computeCapacity(state, runId, state.ui.batch);
+  var promiseCount = 0, promiseMinutes = 0;
+  for (var pi = 0; pi < run.offRecordPromises.length; pi++){
+    var pp = run.offRecordPromises[pi];
+    if (pp.batch !== state.ui.batch || !pp.active) continue;
+    promiseCount++; promiseMinutes += pp.minutes;
+  }
   var dl = el('dl', 'kv');
   dl.appendChild(el('dt', null, 'Run')); dl.appendChild(el('dd', null, run.label + ' (' + run.runId + ')'));
   dl.appendChild(el('dt', null, 'Batch')); dl.appendChild(el('dd', null, state.ui.batch));
-  dl.appendChild(el('dt', null, 'Minutes reserved')); dl.appendChild(el('dd', null, cap.reserved + ' of ' + cap.base + ' (' + cap.remaining + ' remaining)'));
+  dl.appendChild(el('dt', null, 'Minutes reserved')); dl.appendChild(el('dd', null, cap.reserved + ' of ' + cap.base + ' (' + cap.remaining + ' remaining)' + (cap.deficit ? ' — in deficit' : '')));
+  if (promiseCount){
+    dl.appendChild(el('dt', null, 'Off-record promises reported'));
+    dl.appendChild(el('dd', null, promiseCount + ' active, ' + promiseMinutes + ' minutes promised'));
+  }
   for (var s = 0; s < STATE_ORDER.length; s++){
     if (!STATES[STATE_ORDER[s]].implemented && !counts[STATE_ORDER[s]]) continue;
     dl.appendChild(el('dt', null, STATES[STATE_ORDER[s]].label));
@@ -2458,8 +3187,8 @@ function renderTech(){
 
   host.appendChild(el('h4', null, 'What is not built yet'));
   var ul = el('ul');
-  ['Binding, deferred and delegation states, and the off-record promise report (Step 3).',
-   'Human confirmation of an unresolved identity, decision chips and conditional fields (Step 4).',
+  ['Human confirmation of an unresolved identity, decision chips and fuller reason prompts (Step 4).',
+   'Surfacing overdue deferrals and pending delegations, and later-outcome entry (Step 4).',
    'Copying an evidence packet, pasting a manually supplied brief, citation checking, late release and four independent runs (Step 5).',
    'In-page self-checks (Step 6).'].forEach(function(x){ ul.appendChild(el('li', null, x)); });
   host.appendChild(ul);
