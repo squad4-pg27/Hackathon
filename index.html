@@ -1381,7 +1381,8 @@ function plannedReservation(state, runId, proposal){
   var from = currentStateOf(state, runId, proposal.requestId);
   var gate = transitionGate(from, proposal.state);
   if (gate && gate.keep) return currentReservationFor(state, runId, proposal.requestId);
-  return Number(proposal.minutes);
+  var read = readMinutes(proposal.minutes);
+  return read.ok ? read.minutes : 0;
 }
 
 /* Validate a proposed decision against the agreed table. Returns a list of
@@ -1413,12 +1414,8 @@ function validateDecision(state, runId, proposal){
   }
   /* Duration, and the capacity check on the increase only. */
   if (target.reserves && !gate.keep){
-    var minutes = Number(proposal.minutes);
-    if (!isFinite(minutes) || Math.floor(minutes) !== minutes || minutes <= 0){
-      errors.push({ field:'minutes', message:'Duration must be a whole number of minutes above zero.' });
-    } else if (minutes > MAX_DECISION_MINUTES){
-      errors.push({ field:'minutes', message:'Duration above ' + MAX_DECISION_MINUTES + ' minutes looks like a slip; please check it.' });
-    }
+    var read = readMinutes(proposal.minutes);
+    if (!read.ok) errors.push({ field:'minutes', message: read.reason });
   }
   if (!errors.length || !errors.some(function(e){ return e.field === 'minutes'; })){
     var planned = plannedReservation(state, runId, proposal);
@@ -1563,9 +1560,8 @@ function validatePromise(state, runId, p){
   else if (findPromise(state, runId, id)) errors.push({ field:'promiseId', message:'A promise with the identifier "' + id + '" is already recorded in this run.' });
   if (isBlank(p.description)) errors.push({ field:'description', message:'Describe what was promised.' });
   if (isBlank(p.reportedByRole)) errors.push({ field:'reportedByRole', message:'Record who reported this promise.' });
-  var m = Number(p.minutes);
-  if (!isFinite(m) || Math.floor(m) !== m || m <= 0) errors.push({ field:'minutes', message:'Minutes must be a whole number above zero.' });
-  else if (m > MAX_DECISION_MINUTES) errors.push({ field:'minutes', message:'Minutes above ' + MAX_DECISION_MINUTES + ' looks like a slip; please check it.' });
+  var readP = readMinutes(p.minutes);
+  if (!readP.ok) errors.push({ field:'minutes', message: readP.reason });
   var batch = p.batch;
   if (p.linkedRequestId){
     var req = getRequestById(state, p.linkedRequestId);
@@ -1595,7 +1591,7 @@ function reportPromise(state, runId, p){
 
   var linked = p.linkedRequestId ? getRequestById(state, p.linkedRequestId) : null;
   var batch = linked ? linked.batch : p.batch;
-  var minutes = Number(p.minutes);
+  var minutes = readMinutes(p.minutes).minutes;
   var promise = {
     promiseId: String(p.promiseId).trim(),
     submissionId: p.submissionId || uid('SUB'),
@@ -2168,6 +2164,10 @@ function parseCSV(text){
         if (text[i+1] === '"'){ field += '"'; i += 2; continue; }
         inQuotes = false; i++; continue;
       }
+      /* A line break inside a quoted value becomes a single newline, however
+         the file wrote it. A spreadsheet saving CRLF would otherwise leave a
+         stray carriage return sitting inside the evidence text. */
+      if (ch === '\r'){ field += '\n'; if (text[i+1] === '\n') i++; i++; continue; }
       field += ch; i++; continue;
     }
     if (ch === '"'){ inQuotes = true; i++; continue; }
@@ -2222,6 +2222,23 @@ function isIsoDateTime(s){
 }
 function isBool(s){ return s === 'TRUE' || s === 'FALSE'; }
 function isPosWholeNumber(s){ return /^[1-9]\d*$/.test(s); }
+
+/* Reads a duration the way a person writes one. Number() would quietly turn
+   "0x10" into 16 and "1e2" into 100, which is a silent misreading of a
+   capacity figure, so only plain digits are accepted. */
+function readMinutes(value){
+  var raw = value === undefined || value === null ? '' : String(value).trim();
+  if (raw === '') return { ok:false, minutes:0, reason:'Enter a duration in minutes.' };
+  if (!/^\d+$/.test(raw)){
+    return { ok:false, minutes:0,
+      reason:'Write the duration in plain digits, for example 45. "' + raw + '" was not read as a number of minutes.' };
+  }
+  var n = Number(raw);
+  if (n <= 0) return { ok:false, minutes:0, reason:'Duration must be more than zero minutes.' };
+  if (n > MAX_DECISION_MINUTES) return { ok:false, minutes:n,
+    reason:'Duration above ' + MAX_DECISION_MINUTES + ' minutes looks like a slip; please check it.' };
+  return { ok:true, minutes:n, reason:null };
+}
 
 /* Validates the WHOLE proposed dataset before anything is swapped in.
    Returns { ok, errors:[{file,row,message}], data }. */
@@ -2379,8 +2396,41 @@ function validateBackup(obj){
     if (!Array.isArray(run.history)) errors.push('Run "' + runId + '" has no history.');
     if (!run.identityResolutions || typeof run.identityResolutions !== 'object') errors.push('Run "' + runId + '" has no identity resolutions.');
     if (!run.briefs || typeof run.briefs !== 'object') errors.push('Run "' + runId + '" has no briefs object.');
+    errors = errors.concat(checkRunReservations(runId, run));
   }
   if (!s.runs[s.activeRunId]) errors.push('The active run id "' + s.activeRunId + '" does not match any run in the backup.');
+  return errors;
+}
+
+/* A backup or a stored record is an ordinary file, and a file can be edited.
+   Structure being right does not make the numbers in it possible, so the
+   reservations are checked before anything is allowed to replace live work. */
+function checkRunReservations(runId, run){
+  var errors = [], rid;
+  if (!run || !run.decisions) return errors;
+  for (rid in run.decisions){
+    var d = run.decisions[rid];
+    var where = 'Run "' + runId + '", decision for ' + (d && d.requestId ? d.requestId : rid);
+    if (!d || typeof d !== 'object'){ errors.push(where + ' is not a decision record.'); continue; }
+    if (!STATES[d.state]){ errors.push(where + ' has an unknown state "' + d.state + '".'); continue; }
+    if (typeof d.minutes !== 'number' || !isFinite(d.minutes) || Math.floor(d.minutes) !== d.minutes){
+      errors.push(where + ' has a duration that is not a whole number of minutes (' + d.minutes + ').');
+    } else if (d.minutes < 0){
+      errors.push(where + ' holds a negative reservation (' + d.minutes + ' minutes).');
+    } else if (d.minutes > MAX_DECISION_MINUTES){
+      errors.push(where + ' holds ' + d.minutes + ' minutes, beyond the ' + MAX_DECISION_MINUTES + ' minute limit.');
+    } else if (!stateReserves(d.state) && d.minutes !== 0){
+      errors.push(where + ' is "' + STATES[d.state].label + '", which reserves nothing, yet it holds ' + d.minutes + ' minutes.');
+    }
+  }
+  if (Array.isArray(run.offRecordPromises)){
+    for (var i = 0; i < run.offRecordPromises.length; i++){
+      var p = run.offRecordPromises[i];
+      if (!p || typeof p.minutes !== 'number' || !isFinite(p.minutes) || Math.floor(p.minutes) !== p.minutes || p.minutes < 0 || p.minutes > MAX_DECISION_MINUTES){
+        errors.push('Run "' + runId + '", promise ' + (p && p.promiseId ? p.promiseId : i + 1) + ' has an impossible duration (' + (p ? p.minutes : 'missing') + ').');
+      }
+    }
+  }
   return errors;
 }
 
@@ -2504,6 +2554,7 @@ function validateStoredState(s){
   if (!Array.isArray(s.sourceSnapshots) || !s.sourceSnapshots.length) errors.push('Stored value has no source snapshots.');
   if (!s.runs || !Object.keys(s.runs || {}).length) errors.push('Stored value has no runs.');
   if (!Array.isArray(s.history)) errors.push('Stored value has no history.');
+  for (var runId in (s.runs || {})) errors = errors.concat(checkRunReservations(runId, s.runs[runId]));
   return errors;
 }
 /* Fills in fields added after a state was saved, so older saved work and
@@ -2542,20 +2593,42 @@ var App = {
   state: null,
   storage: createStorageAdapter(STORAGE_KEY),
   storageStatus: null,      /* result of the start-up probe */
-  saveState: 'unknown',     /* 'saved' | 'unsaved' | 'blocked' | 'nostorage' */
+  saveState: 'unknown',     /* 'saved' | 'unsaved' | 'blocked' | 'nostorage' | 'conflict' */
+  lastSeenToken: null,      /* which stored version this page last read or wrote */
   saveMessage: '',
   corrupt: null,            /* { reason, raw } when stored data could not be read */
   lastNotice: null,
   formDraft: null           /* { requestId, submissionId, state, minutes, reason } */
 };
 
-/* Persist. Only a verified read-back is reported as saved. */
-function persist(){
+/* Persist. Only a verified read-back is reported as saved.
+   Before writing, check that nothing else has written since this page last
+   read. Two windows open on the same file share one storage location, and
+   without this check the second one to save would quietly erase the first
+   one's work. Pass force to deliberately replace what is there. */
+function persist(force){
   if (App.corrupt){
     App.saveState = 'blocked';
     App.saveMessage = 'Saving is on hold because the data already in this browser could not be read. Nothing has been overwritten.';
     return false;
   }
+  if (!force){
+    var current = App.storage.readRaw();
+    if (current.ok && current.raw){
+      var theirs = null;
+      try { theirs = JSON.parse(current.raw); } catch (e){ theirs = null; }
+      if (theirs && theirs.writeToken && theirs.writeToken !== App.lastSeenToken){
+        App.saveState = 'conflict';
+        App.saveMessage = 'Another window saved to this same storage location at ' + fmtStamp(theirs.updatedAt) +
+          '. Saving here would erase that work, so nothing was written. Your work is still on this page.';
+        return false;
+      }
+    }
+  }
+  /* A new token on every write, so another window can tell that the stored
+     version moved on from the one it last read. */
+  App.state.writeToken = uid('W');
+  App.state.updatedAt = nowIso();
   var text;
   try { text = JSON.stringify(App.state); }
   catch (e){
@@ -2564,7 +2637,12 @@ function persist(){
     return false;
   }
   var res = App.storage.writeVerified(text);
-  if (res.ok){ App.saveState = 'saved'; App.saveMessage = 'Saved and read back at ' + fmtStamp(nowIso()) + '.'; return true; }
+  if (res.ok){
+    App.lastSeenToken = App.state.writeToken;
+    App.saveState = 'saved';
+    App.saveMessage = 'Saved and read back at ' + fmtStamp(nowIso()) + '.';
+    return true;
+  }
   App.saveState = App.storageStatus && App.storageStatus.ok ? 'unsaved' : 'nostorage';
   App.saveMessage = res.reason + (res.previousPreserved ? ' The previously saved record was left in place.' : '');
   return false;
@@ -2604,6 +2682,7 @@ function loadAtStart(){
   }
   /* Valid existing work is restored, never silently replaced by fixtures. */
   App.state = normaliseState(parsed);
+  App.lastSeenToken = parsed.writeToken || null;
   App.saveState = 'saved';
   App.saveMessage = 'Restored work saved at ' + fmtStamp(parsed.updatedAt) + '.';
 }
@@ -2634,7 +2713,7 @@ function render(){
 function renderAlerts(){
   var host = document.getElementById('alertRegion');
   clear(host);
-  if (App.saveState === 'unsaved' || App.saveState === 'nostorage' || App.saveState === 'blocked'){
+  if (App.saveState === 'unsaved' || App.saveState === 'nostorage' || App.saveState === 'blocked' || App.saveState === 'conflict'){
     var b = el('div', 'banner stop');
     b.appendChild(el('strong', null, 'Changes are not safely saved. Download a backup before refreshing or closing.'));
     b.appendChild(el('div', null, App.saveMessage));
@@ -2642,6 +2721,20 @@ function renderAlerts(){
     var dl = el('button', 'primary', 'Download backup now');
     dl.addEventListener('click', downloadBackup);
     row.appendChild(dl);
+    if (App.saveState === 'conflict'){
+      var mine = el('button', 'danger', 'Keep this window’s work and replace the other');
+      mine.id = 'btnResolveKeepMine';
+      mine.addEventListener('click', function(){
+        if (persist(true)) notice('warn', 'This window’s work was saved over the other window’s',
+          'The other window still shows its own version. Close it, or reload it, so the two do not diverge again.');
+        render();
+      });
+      row.appendChild(mine);
+      var theirs = el('button', null, 'Discard this window’s changes and load the saved work');
+      theirs.id = 'btnResolveTakeTheirs';
+      theirs.addEventListener('click', function(){ location.reload(); });
+      row.appendChild(theirs);
+    }
     if (App.corrupt){
       var raw = el('button', null, 'Download the unreadable stored text');
       raw.addEventListener('click', downloadCorruptRaw);
@@ -4398,9 +4491,10 @@ function handleBackupRestore(file){
     App.state = normaliseState(obj.state);
     App.corrupt = null;
     App.formDraft = null;
+    App.lastSeenToken = null;
     App.state.history.push({ eventId: uid('EV'), at: nowIso(), type: 'backup_restored', detail: 'Restored from a backup exported at ' + obj.exportedAt + '.' });
     App.state.updatedAt = nowIso();
-    var saved = persist();
+    var saved = persist(true);
     notice(saved ? 'ok' : 'warn', saved ? 'Backup restored' : 'Backup restored in this page only',
       'Restored the work exported at ' + fmtStamp(obj.exportedAt) + '.' + (saved ? '' : ' ' + App.saveMessage));
     render();
@@ -4962,6 +5056,71 @@ function selfCheckRunIsolation(){
   return out;
 }
 
+/* --- things that only showed up under deliberate abuse ---------------- */
+function selfCheckHardening(){
+  var out = [];
+
+  /* A duration written in a form JavaScript would quietly reinterpret. */
+  var readings = [];
+  var shouldRefuse = ['0x10', '1e2', '45.0', '+45', '', '45abc', 'Infinity', '-45'];
+  var refusedAll = true;
+  for (var i = 0; i < shouldRefuse.length; i++){
+    var r = readMinutes(shouldRefuse[i]);
+    if (r.ok) refusedAll = false;
+    readings.push(JSON.stringify(shouldRefuse[i]) + (r.ok ? ' WAS ACCEPTED as ' + r.minutes : ''));
+  }
+  var plainOk = readMinutes('45').minutes === 45 && readMinutes(' 45 ').minutes === 45 && readMinutes('045').minutes === 45;
+  out.push(ck('A duration is read as plain digits, never as hexadecimal or exponent notation',
+    refusedAll && plainOk,
+    'refused ' + shouldRefuse.length + ' misleading forms including "0x10" (which would otherwise read as 16) and "1e2" (as 100); 45, " 45 " and "045" all read as 45'));
+
+  /* A line break inside a quoted value, however the file wrote it. */
+  var crlf = csvToObjects('note_id,contact_id,date,source_type,excerpt,conflict_group\r\nN1,C1,2026-01-01,email,"one\r\ntwo",\r\n');
+  var excerpt = crlf.rows[0].excerpt;
+  out.push(ck('A line break inside a quoted value survives without a stray carriage return',
+    excerpt.indexOf('\r') < 0 && excerpt.split('\n').length === 2,
+    'the excerpt reads as ' + JSON.stringify(excerpt) + ', which is what a spreadsheet saving CRLF should produce'));
+
+  /* A backup is a file, and a file can be edited by hand. */
+  var st = createInitialState();
+  applyDecision(st, 'RUN-1', { requestId:'R001', submissionId:'SC-H1', state:'provisional_approval', minutes:45, reason:'x', actorRole:'self-check' });
+  var good = makeBackup(st);
+  function edited(change){
+    var copy = JSON.parse(JSON.stringify(good));
+    change(copy.state.runs['RUN-1'].decisions['R001']);
+    return validateBackup(copy);
+  }
+  var negative = edited(function(d){ d.minutes = -999; });
+  var absurd   = edited(function(d){ d.minutes = 99999; });
+  var mismatch = edited(function(d){ d.state = 'declined'; });
+  var unknown  = edited(function(d){ d.state = 'invented_state'; });
+  out.push(ck('A hand-edited backup carrying an impossible reservation is refused',
+    negative.length > 0 && absurd.length > 0 && mismatch.length > 0 && unknown.length > 0 && validateBackup(good).length === 0,
+    'refused: a negative reservation, one beyond the limit, a state that reserves nothing yet holds minutes, and an unknown state. An untouched backup is still accepted'));
+
+  /* Every write is stamped, so another window can tell the stored version moved on. */
+  var backing = createMemoryBacking({}, 'normal');
+  var adapter = createStorageAdapter('timeLedger.selfcheck.state', backing);
+  var first = JSON.stringify({ app:'time-ledger', writeToken:'TOKEN-ONE' });
+  adapter.writeVerified(first);
+  var storedToken = JSON.parse(backing.getItem('timeLedger.selfcheck.state')).writeToken;
+  out.push(ck('A saved record carries a token identifying which version it is',
+    storedToken === 'TOKEN-ONE',
+    'the stored record is stamped ' + storedToken + '. A window whose last seen token differs refuses to save over it, rather than replacing another window’s work'));
+
+  /* Markup that is not a script tag. */
+  var host = document.createElement('div');
+  var vectors = ['<img src=x onerror=alert(1)>', '<svg onload=alert(1)>', 'javascript:alert(1)',
+                 '"><b>bold</b>', '<iframe src=javascript:alert(1)>'];
+  for (var v = 0; v < vectors.length; v++) host.appendChild(el('div', 'rtext', vectors[v]));
+  var created = host.querySelectorAll('img,svg,iframe,b,script').length;
+  var allShown = true;
+  for (var w = 0; w < vectors.length; w++) if (host.textContent.indexOf(vectors[w]) < 0) allShown = false;
+  out.push(ck('Markup other than a script tag also renders as text and creates nothing',
+    created === 0 && allShown, vectors.length + ' vectors rendered, ' + created + ' elements created'));
+  return out;
+}
+
 /* --- the whole set --------------------------------------------------- */
 function runSelfChecks(){
   var results = [];
@@ -4973,7 +5132,8 @@ function runSelfChecks(){
     ['Reservations and amendments', selfCheckReservations],
     ['Unresolved and overdue work', selfCheckUnresolved],
     ['Imports, backups and storage', selfCheckDataHandling],
-    ['Run isolation', selfCheckRunIsolation]
+    ['Run isolation', selfCheckRunIsolation],
+    ['Hardening', selfCheckHardening]
   ];
   for (var g = 0; g < groups.length; g++){
     var rows;
@@ -5308,7 +5468,8 @@ function doReset(){
   App.resetArmed = false;
   App.importErrors = null;
   App.corrupt = null;
-  var saved = persist();
+  App.lastSeenToken = null;
+  var saved = persist(true);
   notice(saved ? 'ok' : 'warn', 'Reset complete', saved ? 'Everything is back to the embedded demonstration fixtures.' : 'Reset in this page only. ' + App.saveMessage);
   render();
 }
@@ -5339,6 +5500,23 @@ function wire(){
   });
 }
 
+/* Best effort early warning: some browsers tell a page when another window
+   writes to the same storage. Where they do not, the check before saving
+   still catches it. */
+function watchForOtherWindows(){
+  try {
+    window.addEventListener('storage', function(e){
+      if (e.key !== STORAGE_KEY || !e.newValue) return;
+      var theirs = null;
+      try { theirs = JSON.parse(e.newValue); } catch (err){ return; }
+      if (!theirs || theirs.writeToken === App.state.writeToken) return;
+      App.saveState = 'conflict';
+      App.saveMessage = 'Another window has just saved to this same storage location. Saving here would erase that work.';
+      render();
+    });
+  } catch (e){ /* nothing to do; the check before saving still applies */ }
+}
+
 function start(){
   loadAtStart();
   App.state = normaliseState(App.state);
@@ -5346,6 +5524,7 @@ function start(){
   App.state.ui.batch = getRun(App.state, App.state.activeRunId).batch;
   if (!App.state.ui) App.state.ui = { batch:'A', selectedRequestId:null, role:'Executive assistant' };
   wire();
+  watchForOtherWindows();
   render();
 }
 start();

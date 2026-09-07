@@ -43,6 +43,7 @@ double-clicking the file, so it is tested that way.
 | `05-briefs-and-runs.js` | Copying a packet and what it may and may not contain, the clipboard fallback, every brief fixture and its expected verdict, staleness and re-review, releasing the late request, run isolation, effort capture with elapsed time excluded, and the assessor gate including that the key never reaches state, storage or a backup |
 | `06-self-checks.js` | Presses the application's own **Run self-checks** button and reports every row it produces, then confirms from outside that the operator's work and saved record were untouched |
 | `07-control-audit.js` | Every button labelled, every field labelled, focus visible on every control reached, no horizontal overflow at 1280×720, and clicking every control (except the one-way ones) raising no errors |
+| `08-stress.js` | Deliberate abuse: malformed and awkward CSV shapes, durations JavaScript would quietly reinterpret, markup vectors beyond a script tag, two windows saving at once, an exhausted storage quota, a 500-step random walk checked for invariant drift, the overdue boundary, hand-edited backups, a promise linked to a request in every state, a long session, brief checking under a megabyte of input, extreme text, and hammering the interface |
 
 `dev/fixtures/README.md` documents the mock data, including what each broken
 file breaks and what the application should say about it.
@@ -77,9 +78,32 @@ file breaks and what the application should say about it.
 - They check **behaviour, not judgement**. Nothing here can tell you whether
   the fixtures read as realistic or whether the evidence key's judgements are
   the right ones. Those need a person.
-- A full pass is **not** a claim that the application is free of faults. Three
-  faults were found by these checks after the application was believed
-  finished, which is the point of having them.
+- A full pass is **not** a claim that the application is free of faults. **Nine
+  faults have been found by these checks after the application was believed
+  finished**, which is the point of having them.
+
+---
+
+## Faults these checks have found
+
+Each one now has a permanent check, so it cannot come back unnoticed.
+
+| Found by | Fault |
+|---|---|
+| In-page self-checks | A literal closing script tag in the self-check source ended the script element, leaving a blank page |
+| In-page self-checks | `writeVerified` reported the previous saved record as preserved without checking the restore had taken |
+| In-page self-checks | A brief bullet reading "none" was flagged as an uncited factual claim |
+| Control audit | A file input with no label, and an unused screen-reader class that reported as overflowing |
+| Brief fixtures | The packet's example citation line used real-looking identifiers with nothing marking them as illustrative, so a model copying the example would have its brief rejected |
+| **Stress: CSV shapes** | **A line break inside a quoted value kept its carriage return.** Any spreadsheet saving CRLF put a stray `\r` inside the evidence text |
+| **Stress: durations** | **`0x10` was quietly read as 16 minutes and `1e2` as 100.** A capacity figure was being silently reinterpreted |
+| **Stress: two windows** | **Two windows open on the same file silently overwrote each other's work.** The second to save erased the first, with no warning |
+| **Stress: backups** | **A hand-edited backup carrying a negative or impossible reservation was accepted**, producing negative reserved minutes and more than 120 remaining |
+
+The last four were found by `08-stress.js` and are the reason it exists.
+Two of the "failures" it reported first time were faults in the checks
+themselves, not the application — both are noted in the suite where they
+were corrected.
 
 ---
 
