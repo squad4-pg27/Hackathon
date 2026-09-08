@@ -1,0 +1,7 @@
+commitment_id,batch,minutes,description,binding
+CM101,A,150,"Weekly leadership meeting, recurring. Already deducted, context only.",TRUE
+CM102,A,90,"Renewal committee standing slot. Already deducted, context only.",TRUE
+CM103,A,30,"Customer success stand-up, moveable. Already deducted, context only.",FALSE
+CM104,B,150,"Weekly leadership meeting, recurring. Already deducted, context only.",TRUE
+CM105,B,60,"Product roadmap review. Already deducted, context only.",TRUE
+CM106,B,45,"Partner council, moveable. Already deducted, context only.",FALSE

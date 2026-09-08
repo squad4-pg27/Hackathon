@@ -1,0 +1,8 @@
+account_id,account_name,owner,annual_value,notes
+ACC101,Northvale Bank,Delia Okafor,2400000,CRM stage: Closed Won. Renewal due 2026-11-30. Largest account by recorded annual value.
+ACC102,Trellis Retail Group,Hugo Lindqvist,860000,CRM stage: Closed Won. Expansion opportunity open since 2026-07.
+ACC103,Pioneer Grid,Hugo Lindqvist,0,CRM stage: Discovery. No commercial terms recorded.
+ACC104,Alder & Co,Delia Okafor,145000,"CRM stage: Closed Won, flagged at risk 2026-08. See conflicting records CRMX1."
+ACC105,Corvid Ventures,The leader,,Investor. Not a revenue account; annual value is not recorded rather than zero.
+ACC106,Selkirk Manufacturing,,0,CRM stage: Qualification. Inbound mail received from the domain selkirk.example. No verified contact record exists for this account.
+ACC107,Bramble Health,Delia Okafor,320000,"CRM stage: Closed Lost. Recorded as churned 2026-05-14. Annual value is the last contracted figure, not current."

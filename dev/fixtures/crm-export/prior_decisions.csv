@@ -1,0 +1,7 @@
+decision_id,contact_id,date,action,reason
+P001,K001,2026-06-02,binding,Payments migration timetable session. 45 minutes.
+P002,K002,2026-04-08,declined,Pricing request handled by the account team without leader time.
+P003,K005,2026-09-01,declined,Discovery stage enquiry. Asked for a written brief before any meeting.
+P004,K007,2026-07-22,binding,Quarterly investor update. 25 minutes.
+P005,K008,2026-05-14,declined,Account closed. No further leader time while the closure was being handled.
+P006,K009,2026-08-27,deferred,Roadmap question routed to product; revisit after the October release.

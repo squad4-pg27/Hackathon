@@ -1,0 +1,25 @@
+note_id,contact_id,date,source_type,excerpt,conflict_group
+M001,K001,2026-05-19,crm,Opportunity record for Northvale Bank updated: Marta Sandoval listed as economic buyer for the payments workstream.,
+M002,K001,2026-06-02,meeting_note,Marta Sandoval of Northvale Bank walked through the payments migration timetable with the leader.,
+M003,K002,2026-03-11,crm,Trellis Retail Group contact Marta Sandoval recorded against the merchandising expansion opportunity. No meetings logged.,
+M004,K002,2026-04-08,email,Marta Sandoval of Trellis Retail asked for pricing collateral. Reply sent by the account team; no leader involvement.,
+M005,K003,2026-08-21,crm,Northvale Bank renewal opportunity moved to Commit. Close date 2026-11-30. Two open security questions logged against the record.,
+M006,K003,2026-09-03,meeting_note,Ade Balogun raised the architecture review as a condition of the Northvale Bank renewal. Confirmed by the account owner in the same thread.,
+M007,K005,2026-08-30,crm,Pioneer Grid created as a Discovery stage opportunity from an inbound enquiry. Source recorded as a conference list.,
+M008,K006,2026-08-12,crm,Alder & Co account flagged at risk. Reason logged: usage down 40 per cent across two quarters.,CRMX1
+M009,K006,2026-09-05,email,"Sofia Marchetti wrote that Alder & Co had approved next year's budget and expected to expand, which the at-risk flag on the account does not reflect.",CRMX1
+M010,K007,2024-11-08,meeting_note,Standing arrangement recorded in November 2024: 45 minutes with Corvid Ventures before each board pack is circulated.,
+M011,K007,2026-07-22,crm,Investor update with Yusuf Demir logged. Duration recorded as 25 minutes.,
+M012,K008,2026-05-14,crm,Bramble Health recorded as churned. Closed Lost reason logged as implementation delays and support response times.,
+M013,K008,2026-09-10,email,Nia Okonjo asked whether returning was possible. No commercial discussion has taken place since the account closed.,
+M014,K003,2026-09-04,crm,"Renewal checklist copied from the CRM opportunity record:
+1. Security review outstanding, owner Ade Balogun.
+2. Migration plan draft attached, dated 2026-09-02.
+3. Board sign-off required before 2026-11-30.",
+M015,K010,2026-06-30,crm,Lattice Partners recorded as delivery partner on three implementations. Partner tier logged as Silver.,
+M016,K010,2026-09-08,meeting_note,Idris Khan of Lattice Partners introduced the Pioneer Grid enquiry that became the Discovery stage opportunity. Introduction confirmed by the Pioneer Grid side.,
+M017,K009,2026-08-27,crm,Two escalations logged by Petra Vogel asking for a roadmap position. Both routed to product rather than to the leader.,
+M018,K004,2026-09-01,crm,Trellis Retail expansion opportunity updated. Scoping marked complete by the customer's own operations team.,
+M019,K004,2026-09-09,email,"Ruth Feng wrote: ""We are ready to move, but the decision has to land before our peak freeze on the 20th.""",
+M020,K012,2026-04-17,crm,Candidate Tomás Iglesias not selected. Feedback delivered by the hiring lead.,
+M021,K001,2026-09-11,email,Message received from a personal address signing off as Marta Sandoval. The mail system migration mentioned in it is not recorded anywhere in the CRM.,

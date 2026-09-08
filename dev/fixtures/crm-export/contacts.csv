@@ -1,0 +1,13 @@
+contact_id,name,email,org,account_id,role,relationship_owner
+K001,Marta Sandoval,m.sandoval@northvalebank.example,Northvale Bank,ACC101,Head of Payments,Delia Okafor
+K002,Marta Sandoval,marta.sandoval@trellisretail.example,Trellis Retail Group,ACC102,Merchandising Director,Hugo Lindqvist
+K003,Ade Balogun,a.balogun@northvalebank.example,Northvale Bank,ACC101,Chief Technology Officer,Delia Okafor
+K004,Ruth Feng,r.feng@trellisretail.example,Trellis Retail Group,ACC102,VP Operations,Hugo Lindqvist
+K005,Callum Reyes,c.reyes@pioneergrid.example,Pioneer Grid,ACC103,Programme Lead,Hugo Lindqvist
+K006,Sofia Marchetti,s.marchetti@alderco.example,Alder & Co,ACC104,Managing Partner,Delia Okafor
+K007,Yusuf Demir,yusuf@corvidventures.example,Corvid Ventures,ACC105,General Partner,The leader
+K008,Nia Okonjo,n.okonjo@bramblehealth.example,Bramble Health,ACC107,Director of IT,Delia Okafor
+K009,Petra Vogel,petra.vogel@haldensystems.example,Halden Systems (internal),,Head of Customer Success,The leader
+K010,Idris Khan,i.khan@lattice-partners.example,Lattice Partners,,Implementation Partner,Hugo Lindqvist
+K011,Bea Whitlock,b.whitlock@haldensystems.example,Halden Systems (internal),,Solutions Engineer,
+K012,Tomás Iglesias,tomas.iglesias@mailbox.example,,,"Candidate, not selected 2026",Hiring lead

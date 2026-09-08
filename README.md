@@ -57,6 +57,12 @@ Every number below was verified in a real browser.
 | **1:45** | Choose **Binding** again, try to cut it to 20 | Refused: *"A binding commitment can only be changed or released with a leader-approved amendment."* |
 | **2:00** | **Run self-checks** | **67 passed, 0 failed** |
 
+**If someone asks "does it work with our data?"** — open **Data, storage and
+backups**, choose all eight files in `dev/fixtures/crm-export/`, and the desk
+reloads onto a completely different organisation's CRM records: different
+accounts, different people, its own namesake and its own conflicting records.
+Your earlier work is kept, not overwritten. It takes about fifteen seconds.
+
 **The strongest line to close on:** *"It is built to refuse. It will not guess who
 someone is, it will not let a firm commitment be quietly shortened, and it never
 ranks anybody."*
@@ -70,6 +76,7 @@ ranks anybody."*
 | **`index.html`** | **The application. This is the whole thing.** |
 | `RUNSHEET.md` | How to actually run the experiment with two reviewers |
 | `data/*.csv` | The synthetic records. Not needed to run — the app has its own copy built in |
+| `dev/fixtures/crm-export/` | A second, complete mock **CRM export** you can import to show the desk running on different records |
 | `data/README.md`, `data/evidence_key.csv` | **Assessor material. Do not show these to a reviewer before they have finished** |
 | `dev/` | The test kit. Development only; delete it and the app still works |
 | `CLAUDE.md` | The rules this was built to |
