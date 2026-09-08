@@ -62,6 +62,9 @@ async function decide(page, requestId, opts){
   await page.check('#act_' + opts.state);
   await page.waitForTimeout(150);
   if (opts.minutes !== undefined && await page.$('#minutesIn')) await page.fill('#minutesIn', String(opts.minutes));
+  if (await page.$('#alternativeIn'))
+    await page.fill('#alternativeIn', opts.alternative === undefined
+      ? 'nothing else was competing for this slot in the test' : opts.alternative);
   if (opts.owner && await page.$('#ownerIn')) await page.fill('#ownerIn', opts.owner);
   if (opts.reviewDate && await page.$('#reviewDateIn')) await page.fill('#reviewDateIn', opts.reviewDate);
   if (opts.ackBy && await page.$('#ackByIn')){ await page.fill('#ackByIn', opts.ackBy); await page.check('#ackConfirmIn'); }
@@ -77,6 +80,8 @@ async function decide(page, requestId, opts){
   if (opts.clarification && await page.$('#needsClarificationIn')){
     await page.check('#needsClarificationIn'); await page.waitForTimeout(120);
     await page.fill('#clarificationIn', opts.clarification);
+    await page.fill('#clarificationOwnerIn', opts.clarificationOwner || 'a named owner');
+    await page.fill('#clarificationDueIn', opts.clarificationDue || '2026-10-01');
   }
   await page.fill('#reasonIn', opts.reason === undefined ? 'test reason linking the evidence to a trade-off' : opts.reason);
   await page.click('#saveDecision');
@@ -93,6 +98,14 @@ async function confirmIdentityInUi(page, requestId, contactIdOrUnresolved, basis
   await page.fill('#identityBasisIn', basis);
   await page.click('#btnConfirmIdentity');
   await page.waitForTimeout(280);
+}
+
+/* Fills the displaced-alternative box when the chosen action reveals it.
+   Suites that drive the form field by field call this; decide() does it
+   for itself. */
+async function fillAlternative(page, text){
+  if (await page.$('#alternativeIn'))
+    await page.fill('#alternativeIn', text || 'nothing else was competing for this slot in the test');
 }
 
 /* Reads a brief fixture and substitutes the placeholders with real ids
@@ -132,5 +145,5 @@ const noOverflow = page => page.evaluate(() => ({
 }));
 
 module.exports = { openApp, openPanel, openAllPanels, requestIds, selectRequest, switchRun,
-                   remaining, capacityText, decide, confirmIdentityInUi, loadBriefFixture,
+                   remaining, capacityText, decide, fillAlternative, confirmIdentityInUi, loadBriefFixture,
                    packetIds, csvSet, noOverflow };

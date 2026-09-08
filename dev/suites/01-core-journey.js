@@ -72,6 +72,7 @@ module.exports = H.defineSuite(
     await page.check('#act_provisional_approval');
     await page.waitForTimeout(120);
     await page.fill('#reasonIn', '    ');
+    await A.fillAlternative(page);
     await page.click('#saveDecision');
     await page.waitForTimeout(180);
     rec.check('A reason of only spaces is refused',
@@ -91,6 +92,7 @@ module.exports = H.defineSuite(
     await page.check('#act_provisional_approval');
     await page.fill('#minutesIn', '60');
     await page.fill('#reasonIn', 'Documented introduction into the largest account; the deferral condition is now met.');
+    await A.fillAlternative(page);
     await Promise.all([page.click('#saveDecision'), page.click('#saveDecision').catch(() => {})]);
     await page.waitForTimeout(320);
     rec.check('A rapid double click reserves the minutes once, not twice',

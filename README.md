@@ -55,6 +55,7 @@ Every number below was verified in a real browser.
 | **1:05** | Click **R001**, choose **Provisional approval**, 50 minutes, a reason, **Save decision** | **remaining 70 of 120** |
 | **1:25** | Choose **Binding**, save | **No duration box** — *"Reservation carried across unchanged: 50 minutes."* Still **remaining 70**. *Say: converting never reserves twice* |
 | **1:45** | Choose **Binding** again, try to cut it to 20 | Refused: *"A binding commitment can only be changed or released with a leader-approved amendment."* |
+| | *(if asked how it forces a trade-off)* | Reserving time will not save until **"What this displaces"** is filled in. Naming what does not happen is part of the decision |
 | **2:00** | **Run self-checks** | **67 passed, 0 failed** |
 
 **If someone asks "does it work with our data?"** — open **Data, storage and

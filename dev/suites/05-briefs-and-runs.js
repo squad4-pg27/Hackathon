@@ -242,6 +242,27 @@ module.exports = H.defineSuite(
     rec.check('More than one defensible allocation is acknowledged',
       /different allocations of the leader/.test(assess), 'stated');
 
+    /* The conditions that stop pilot readiness even when the run was faster. */
+    const runMarkIds = await page.$$eval('#assessorBody select[id^=runmark_]', n => n.map(x => x.id));
+    rec.check('The assessor judges the four run-level conditions separately from the key rows',
+      runMarkIds.length === 4 &&
+      runMarkIds.some(i => /alternative$/.test(i)) && runMarkIds.some(i => /relationship$/.test(i)) &&
+      runMarkIds.some(i => /authority$/.test(i)) && runMarkIds.some(i => /binding$/.test(i)),
+      runMarkIds.length + ' conditions offered: comparison against another use of the time, unsupported relationship claim, unauthorised approval, binding changed without an amendment');
+    const prompts = await page.textContent('#assessorBody');
+    rec.check('Each condition shows a count as a prompt, and says the count is not the judgement',
+      /decisions that reserved time recorded what they displaced/.test(prompts) &&
+      /amendments? recorded in this run/.test(prompts) &&
+      /a mechanical prompt for your attention, not the judgement/.test(prompts),
+      (prompts.match(/\d+ of \d+ decisions that reserved time recorded what they displaced/) || ['none'])[0]);
+    await page.selectOption('#' + runMarkIds.find(i => /relationship$/.test(i)), 'no');
+    await page.waitForTimeout(200);
+    rec.check('Answering No to a run-level condition stops pilot readiness in plain words',
+      /stops pilot readiness for this run whatever the effort figures say/.test(await page.textContent('#assessorBody')),
+      'said plainly, next to the timings rather than instead of them');
+    await page.selectOption('#' + runMarkIds.find(i => /relationship$/.test(i)), 'yes');
+    await page.waitForTimeout(150);
+
     const marks = await page.$$eval('#assessorBody select[id^=mark_]', n => n.map(x => x.id).slice(0, 3));
     for (const id of marks){ await page.selectOption('#' + id, 'yes'); await page.waitForTimeout(140); }
     rec.check('Marking a row updates the denominator',
@@ -258,6 +279,12 @@ module.exports = H.defineSuite(
     rec.check('The assessment export carries denominators and provenance, and not the key text',
       /applicable_key_rows,\d+,fully_marked,1,unassessed,\d+/.test(acsv) && /author-prepared/.test(acsv) &&
       !/critical_fact/.test(acsv), acsv.split(/\r?\n/).length + ' lines');
+    rec.check('The export carries the run-level judgements too',
+      /no_unsupported_relationship_claim,yes/.test(acsv) &&
+      /every_reason_compares_against_another_use_of_the_time/.test(acsv) &&
+      /no_unauthorised_approval/.test(acsv) &&
+      /no_binding_promise_changed_without_an_amendment/.test(acsv),
+      'all four appear, with unmarked ones written as "unassessed" rather than left blank');
 
     await page.reload();
     await page.waitForTimeout(420);

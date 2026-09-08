@@ -28,6 +28,7 @@ module.exports = H.defineSuite(
       minutesField === null && /carried across unchanged: 50 minutes/.test(carried),
       'no duration field is offered during a conversion');
     await page.fill('#reasonIn', 'Leader confirmed the renewal session; converting the hold into a firm commitment.');
+    await A.fillAlternative(page);
     await page.click('#saveDecision');
     await page.waitForTimeout(260);
     rec.check('4b. Converting to binding still leaves 30, with no second reservation',
@@ -82,6 +83,7 @@ module.exports = H.defineSuite(
     await page.check('#act_declined');
     await page.waitForTimeout(140);
     await page.fill('#reasonIn', 'No capacity this cycle and no deadline; written options instead.');
+    await A.fillAlternative(page);
     await page.click('#saveDecision');
     await page.waitForTimeout(240);
     rec.check('Actions that reserve nothing still work in deficit',
@@ -93,6 +95,7 @@ module.exports = H.defineSuite(
     const amendShown = (await page.$('#amendApproverIn')) !== null;
     await page.fill('#minutesIn', '20');
     await page.fill('#reasonIn', 'trying to cut a binding without an amendment');
+    await A.fillAlternative(page);
     await page.click('#saveDecision');
     await page.waitForTimeout(220);
     const stillFifty = await page.evaluate(() => App.state.runs[App.state.activeRunId].decisions['R001'].minutes);
@@ -102,6 +105,7 @@ module.exports = H.defineSuite(
 
     await page.fill('#amendApproverIn', 'A. Leader');
     await page.fill('#amendReasonIn', 'Leader agreed to shorten the session to clear the overrun.');
+    await A.fillAlternative(page);
     await page.click('#saveDecision');
     await page.waitForTimeout(280);
     rec.check('With a leader-approved amendment the reduction goes through and reconciles the deficit',
@@ -149,12 +153,14 @@ module.exports = H.defineSuite(
     await page.check('#act_delegation_confirmed');
     await page.waitForTimeout(160);
     await page.fill('#reasonIn', 'Events lead has taken it on.');
+    await A.fillAlternative(page);
     await page.click('#saveDecision');
     await page.waitForTimeout(220);
     rec.check('Confirming a delegation needs an explicit acknowledgement',
       /has actually acknowledged/.test(await page.textContent('#decisionBody')), 'refused until the box is ticked');
     await page.fill('#ackByIn', 'J. Steele');
     await page.check('#ackConfirmIn');
+    await A.fillAlternative(page);
     await page.click('#saveDecision');
     await page.waitForTimeout(260);
     rec.check('Delegation states reserve no minutes',

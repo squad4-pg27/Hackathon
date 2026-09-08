@@ -57,7 +57,8 @@ module.exports = H.defineSuite(
       ['45', ' 45 ', '045', '0x10', '1e2', '45.0', '+45', '', '45abc', 'Infinity', '-45', '0', '999']
         .map(v => {
           const errs = validateDecision(App.state, 'RUN-1',
-            { requestId:'R001', state:'provisional_approval', minutes:v, reason:'stress' });
+            { requestId:'R001', state:'provisional_approval', minutes:v, reason:'stress',
+              alternative:'nothing else was competing for this slot in the test' });
           return { v, accepted: errs.length === 0,
                    planned: plannedReservation(App.state, 'RUN-1', { requestId:'R001', state:'provisional_approval', minutes:v }) };
         }));
@@ -93,11 +94,11 @@ module.exports = H.defineSuite(
     const w1 = await A.openApp(context);
     const w2 = await A.openApp(context);
     await w1.evaluate(() => { applyDecision(App.state, 'RUN-1',
-      { requestId:'R001', submissionId:'W1', state:'provisional_approval', minutes:50, reason:'from window one', actorRole:'w1' });
+      { requestId:'R001', submissionId:'W1', state:'provisional_approval', minutes:50, reason:'from window one', actorRole:'w1', alternative:'nothing else was competing for this slot in the test' });
       return persist(); });
     await w1.waitForTimeout(150);
     const second = await w2.evaluate(() => { applyDecision(App.state, 'RUN-1',
-      { requestId:'R002', submissionId:'W2', state:'provisional_approval', minutes:30, reason:'from window two', actorRole:'w2' });
+      { requestId:'R002', submissionId:'W2', state:'provisional_approval', minutes:30, reason:'from window two', actorRole:'w2', alternative:'nothing else was competing for this slot in the test' });
       return { saved: persist(), state: App.saveState, message: App.saveMessage }; });
     await w2.waitForTimeout(200);
     const stored = await w2.evaluate(() => Object.keys(JSON.parse(localStorage.getItem('timeLedger.v1.state')).runs['RUN-1'].decisions));
@@ -118,7 +119,7 @@ module.exports = H.defineSuite(
 
     /* ---- 5. storage quota exhausted ---- */
     const quota = await page.evaluate(() => {
-      applyDecision(App.state, 'RUN-1', { requestId:'R001', submissionId:'Q1', state:'provisional_approval', minutes:45, reason:'work that must survive', actorRole:'q' });
+      applyDecision(App.state, 'RUN-1', { requestId:'R001', submissionId:'Q1', state:'provisional_approval', minutes:45, reason:'work that must survive', actorRole:'q', alternative:'nothing else was competing for this slot in the test' });
       persist(true);
       const good = localStorage.getItem('timeLedger.v1.state');
       let filled = 0;
@@ -210,7 +211,7 @@ module.exports = H.defineSuite(
     /* ---- 8. hand-edited backups ---- */
     const tampered = await page.evaluate(() => {
       const st = createInitialState();
-      applyDecision(st, 'RUN-1', { requestId:'R001', submissionId:'T1', state:'provisional_approval', minutes:45, reason:'x', actorRole:'t' });
+      applyDecision(st, 'RUN-1', { requestId:'R001', submissionId:'T1', state:'provisional_approval', minutes:45, reason:'x', actorRole:'t', alternative:'nothing else was competing for this slot in the test' });
       const good = makeBackup(st);
       const edit = change => { const c = JSON.parse(JSON.stringify(good)); change(c); return validateBackup(c); };
       return {
@@ -247,8 +248,8 @@ module.exports = H.defineSuite(
         if (from !== 'needs_review'){
           applyDecision(st, 'RUN-1', { requestId:'R001', submissionId:'S1',
             state: from === 'binding' ? 'provisional_approval' : from, minutes:40, reason:'setup',
-            owner:'O', reviewDate:'2026-10-01', actorRole:'t' });
-          if (from === 'binding') applyDecision(st, 'RUN-1', { requestId:'R001', submissionId:'S2', state:'binding', reason:'convert', actorRole:'t' });
+            alternative:'nothing else was competing for this slot in the test', owner:'O', reviewDate:'2026-10-01', actorRole:'t' });
+          if (from === 'binding') applyDecision(st, 'RUN-1', { requestId:'R001', submissionId:'S2', state:'binding', reason:'convert', actorRole:'t', alternative:'nothing else was competing for this slot in the test' });
         }
         const before = computeCapacity(st, 'RUN-1', 'A').reserved;
         const res = reportPromise(st, 'RUN-1', { submissionId:'P', promiseId:'p1', description:'d',
@@ -259,13 +260,15 @@ module.exports = H.defineSuite(
     });
     rec.check('A promise linked to an existing reservation never adds a second one',
       linked.provisional_approval.ok && linked.provisional_approval.before === 40 && linked.provisional_approval.after === 40,
-      'reserved 40 before and 40 after linking a 40 minute promise to a provisional approval');
+      'reserved ' + linked.provisional_approval.before + ' before and ' + linked.provisional_approval.after +
+      ' after linking a 40 minute promise to a provisional approval');
     rec.check('A promise linked to a request holding nothing takes on the reservation itself',
       ['needs_review','declined','deferred','delegation_pending'].every(k => linked[k].ok && linked[k].before === 0 && linked[k].after === 40),
-      'from each of those four states, reserved moved from 0 to 40');
+      ['needs_review','declined','deferred','delegation_pending']
+        .map(function(k){ return k + ' ' + linked[k].before + ' to ' + linked[k].after; }).join(', '));
     rec.check('A promise against an already binding request is refused from every angle',
       linked.binding.ok === false && linked.binding.after === 40,
-      'refused, and the binding reservation is untouched at 40 minutes');
+      'accepted: ' + linked.binding.ok + '; reserved after the attempt: ' + linked.binding.after + ' minutes');
 
     /* ---- 10. a long session ---- */
     const perf = await page.evaluate(() => {
@@ -309,8 +312,8 @@ module.exports = H.defineSuite(
       const st = createInitialState();
       const long = 'x'.repeat(100000);
       const awkward = '🧑‍⚖️ مرحبا ‮reversed‬ tab\there';
-      const a = applyDecision(st, 'RUN-1', { requestId:'R001', submissionId:'X1', state:'provisional_approval', minutes:'10', reason:long, actorRole:'t' });
-      const c = applyDecision(st, 'RUN-1', { requestId:'R002', submissionId:'X2', state:'provisional_approval', minutes:'10', reason:awkward, actorRole:'t' });
+      const a = applyDecision(st, 'RUN-1', { requestId:'R001', submissionId:'X1', state:'provisional_approval', minutes:'10', reason:long, actorRole:'t', alternative:'nothing else was competing for this slot in the test' });
+      const c = applyDecision(st, 'RUN-1', { requestId:'R002', submissionId:'X2', state:'provisional_approval', minutes:'10', reason:awkward, actorRole:'t', alternative:'nothing else was competing for this slot in the test' });
       const host = document.createElement('div');
       const cell = el('div', 'rtext', awkward);
       host.appendChild(cell);
@@ -335,6 +338,7 @@ module.exports = H.defineSuite(
     await hammer.check('#act_provisional_approval');
     await hammer.fill('#minutesIn', '30');
     await hammer.fill('#reasonIn', 'hammering the save button');
+    await A.fillAlternative(hammer);
     await Promise.all(Array.from({ length: 8 }, () => hammer.click('#saveDecision').catch(() => {})));
     await hammer.waitForTimeout(500);
     rec.check('Hammering Save reserves the minutes once',

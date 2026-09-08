@@ -1450,8 +1450,16 @@ function validateDecision(state, runId, proposal){
     if (isBlank(proposal.amendApproverRole)) errors.push({ field:'amendApproverRole', message:'Record the role of the person who approved the amendment.' });
     if (isBlank(proposal.amendReason)) errors.push({ field:'amendReason', message:'Record why the amendment was approved. This is separate from the decision reason.' });
   }
-  if (proposal.needsClarification && isBlank(proposal.clarification)){
-    errors.push({ field:'clarification', message:'Write the clarification question you need answered.' });
+  /* Reserving the leader's time spends something that cannot be spent twice.
+     What it displaces is recorded next to the reason, not left implied. */
+  if (target.reserves && isBlank(proposal.alternative)){
+    errors.push({ field:'alternative', message:'Record what this displaces. Reserving time here means some other use of it does not happen; name that other use, or say that nothing was competing for it.' });
+  }
+  if (proposal.needsClarification){
+    if (isBlank(proposal.clarification)) errors.push({ field:'clarification', message:'Write the clarification question you need answered.' });
+    if (isBlank(proposal.clarificationOwner)) errors.push({ field:'clarificationOwner', message:'Record who is being asked. A question with nobody attached to it does not get answered.' });
+    if (isBlank(proposal.clarificationDue)) errors.push({ field:'clarificationDue', message:'Record the date you need the answer by.' });
+    else if (!isIsoDate(proposal.clarificationDue)) errors.push({ field:'clarificationDue', message:'The date for the answer must be a real date.' });
   }
   if (proposal.exception && isBlank(proposal.exceptionReason)){
     errors.push({ field:'exceptionReason', message:'Explain the strategic exception you are recording.' });
@@ -1530,7 +1538,13 @@ function applyDecision(state, runId, proposal){
       simulated: true
     } : null,
     exception: proposal.exception ? { explanation:String(proposal.exceptionReason).trim() } : null,
-    clarification: proposal.needsClarification ? { question:String(proposal.clarification).trim(), answered:false } : null
+    alternative: isBlank(proposal.alternative) ? null : String(proposal.alternative).trim(),
+    clarification: proposal.needsClarification ? {
+      question: String(proposal.clarification).trim(),
+      askedOf: String(proposal.clarificationOwner).trim(),
+      dueBy: String(proposal.clarificationDue).trim(),
+      answered: false
+    } : null
   };
   run.decisions[proposal.requestId] = decision;
   run.history.push({
@@ -1539,7 +1553,8 @@ function applyDecision(state, runId, proposal){
     from: from, to: decision.state, minutes: decision.minutes, releasedMinutes: released,
     carried: !!gate.keep, reason: decision.reason, actorRole: decision.actorRole,
     decisionId: decision.decisionId, amendment: decision.amendment, owner: decision.owner,
-    acknowledgement: decision.acknowledgement, exception: decision.exception, clarification: decision.clarification
+    acknowledgement: decision.acknowledgement, exception: decision.exception,
+    clarification: decision.clarification, alternative: decision.alternative
   });
   state.updatedAt = nowIso();
   return { ok:true, idempotent:false, errors:[], decision:decision, released:released, carried:!!gate.keep };
@@ -2133,15 +2148,29 @@ function todayIso(){
   return d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0') + '-' + String(d.getDate()).padStart(2,'0');
 }
 var UNRESOLVED_STATES = { deferred:1, delegation_pending:1 };
+/* Unresolved work is anything still waiting on a person: a deferral, a
+   delegation nobody has acknowledged, or a question that has been asked and
+   not yet answered. All of it carries an owner and a date, and all of it
+   counts towards the workload. */
 function getUnresolvedWork(state, runId){
   var run = getRun(state, runId), out = [], rid;
   for (rid in run.decisions){
     var d = run.decisions[rid];
-    if (!UNRESOLVED_STATES[d.state]) continue;
-    var due = d.owner ? d.owner.reviewDate : null;
+    var openQuestion = d.clarification && !d.clarification.answered;
+    if (!UNRESOLVED_STATES[d.state] && !openQuestion) continue;
+    var due = UNRESOLVED_STATES[d.state] && d.owner ? d.owner.reviewDate
+            : (openQuestion ? d.clarification.dueBy : null);
+    /* A request can be waiting on two things at once: a deferral with its own
+       owner, and a question put to someone else. Both are shown, because
+       resolving one does not resolve the other. */
     out.push({
       requestId: d.requestId, batch: d.batch, state: d.state,
-      owner: d.owner ? d.owner.name : 'not recorded',
+      kind: UNRESOLVED_STATES[d.state] ? STATES[d.state].label : 'Awaiting an answer',
+      question: openQuestion ? d.clarification.question : null,
+      askedOf: openQuestion ? d.clarification.askedOf : null,
+      questionDue: openQuestion ? d.clarification.dueBy : null,
+      owner: UNRESOLVED_STATES[d.state] && d.owner ? d.owner.name
+           : (openQuestion ? d.clarification.askedOf : 'not recorded'),
       reviewDate: due,
       overdue: !!(due && due < todayIso()),
       daysOverdue: due && due < todayIso()
@@ -3238,6 +3267,15 @@ function renderEvidence(){
   renderBriefSection(host, r);
 }
 
+/* A question about a relationship goes to whoever owns that relationship, so
+   that is offered first. It stays editable, because the records are not always
+   right about who knows. */
+function defaultClarificationOwner(state, runId, request){
+  var identity = resolveIdentity(state, runId, request);
+  if (identity.status !== 'established') return '';
+  var contact = getContactById(state, identity.contactId);
+  return contact && contact.relationship_owner ? contact.relationship_owner : '';
+}
 function blankDraft(state, runId, request){
   var existing = getRun(state, runId).decisions[request.request_id];
   return {
@@ -3251,7 +3289,10 @@ function blankDraft(state, runId, request){
     ackBy: '', ackConfirmed: false,
     amendApprover: '', amendApproverRole: 'Leader (simulated)', amendReason: '',
     exception: false, exceptionReason: '',
+    alternative: '',
     needsClarification: false, clarification: '',
+    clarificationOwner: defaultClarificationOwner(state, runId, request),
+    clarificationDue: '',
     errors: []
   };
 }
@@ -3561,6 +3602,11 @@ function renderDecisionForm(){
       'Separate from the decision reason below.');
   }
 
+  if (gate && target && target.reserves){
+    fieldArea(host, 'alternativeIn', 'What this displaces (required)', draft.alternative, function(v){ draft.alternative = v; },
+      'Reserving this time means some other use of it does not happen. Name that other use, or say plainly that nothing was competing for it.');
+  }
+
   if (draft.state === 'needs_review' || draft.state === 'deferred'){
     var clRow = el('div', 'opt');
     var clIn = document.createElement('input');
@@ -3574,6 +3620,10 @@ function renderDecisionForm(){
     host.appendChild(clRow);
     if (draft.needsClarification){
       fieldArea(host, 'clarificationIn', 'Clarification needed (required)', draft.clarification, function(v){ draft.clarification = v; });
+      fieldText(host, 'clarificationOwnerIn', 'Ask whom (required)', draft.clarificationOwner, function(v){ draft.clarificationOwner = v; }, 'text',
+        'The relationship owner is offered where the records name one. Change it if someone else is better placed to answer.');
+      fieldText(host, 'clarificationDueIn', 'Answer needed by (required)', draft.clarificationDue, function(v){ draft.clarificationDue = v; }, 'date');
+      host.appendChild(el('p', 'small muted', 'This is recorded, not sent. Nothing leaves this page. It stays on the unresolved list until someone acts on it.'));
     }
   }
 
@@ -3663,7 +3713,9 @@ function submitDecision(){
     ackBy: draft.ackBy, ackConfirmed: draft.ackConfirmed,
     amendApprover: draft.amendApprover, amendApproverRole: draft.amendApproverRole, amendReason: draft.amendReason,
     exception: draft.exception, exceptionReason: draft.exceptionReason,
+    alternative: draft.alternative,
     needsClarification: draft.needsClarification, clarification: draft.clarification,
+    clarificationOwner: draft.clarificationOwner, clarificationDue: draft.clarificationDue,
     actorRole: App.state.ui.role
   };
   var res = applyDecision(App.state, App.state.activeRunId, proposal);
@@ -3859,7 +3911,7 @@ function renderUnresolved(){
   var sum = document.querySelector('#secUnresolved > summary');
   sum.textContent = 'Unresolved and overdue work' + (items.length ? ' — ' + items.length + ' open' + (overdue ? ', ' + overdue + ' overdue' : '') : ' — none');
   if (!items.length){
-    host.appendChild(el('p', 'small muted', 'Nothing is deferred or awaiting a delegation in this run. Items placed in those states stay here until someone resolves them.'));
+    host.appendChild(el('p', 'small muted', 'Nothing is deferred, awaiting a delegation, or waiting on an answer in this run. Anything in those states stays here until a person resolves it.'));
     return;
   }
   if (overdue){
@@ -3870,14 +3922,15 @@ function renderUnresolved(){
   }
   var t = el('table', 'grid');
   var hr = el('tr');
-  ['Request','Batch','State','Owner','Review by','Status',''].forEach(function(x){ hr.appendChild(el('th', null, x)); });
+  ['Request','Batch','Waiting on what','Owner','Due','Status',''].forEach(function(x){ hr.appendChild(el('th', null, x)); });
   t.appendChild(hr);
   for (i = 0; i < items.length; i++){
     (function(it){
       var tr = el('tr');
       tr.appendChild(el('td', null, it.requestId));
       tr.appendChild(el('td', null, it.batch));
-      tr.appendChild(el('td', null, STATES[it.state].label));
+      tr.appendChild(el('td', null, it.kind +
+        (it.question ? ' — question for ' + it.askedOf + ' by ' + it.questionDue + ': ' + it.question : '')));
       tr.appendChild(el('td', null, it.owner));
       tr.appendChild(el('td', null, it.reviewDate || 'no date recorded'));
       var td = el('td', null, it.overdue ? 'OVERDUE by ' + it.daysOverdue + ' day' + (it.daysOverdue === 1 ? '' : 's') : 'open');
@@ -4191,6 +4244,8 @@ function renderHistory(){
     if (h.amendment) cond.push('Leader-approved amendment by ' + h.amendment.approver + ' (' + h.amendment.approverRole + '), simulated: ' + h.amendment.reason);
     if (h.owner) cond.push('Owner ' + h.owner.name + ', review by ' + h.owner.reviewDate);
     if (h.acknowledgement) cond.push('Acknowledged by ' + h.acknowledgement.by);
+    if (h.alternative) cond.push('Displaced: ' + h.alternative);
+    if (h.clarification) cond.push('Asked ' + h.clarification.askedOf + ' by ' + h.clarification.dueBy + ': ' + h.clarification.question);
     if (h.exception) cond.push('Strategic exception: ' + h.exception.explanation);
     if (h.type === 'promise_reported') cond.push('Reported, not approved.');
     tr.appendChild(el('td', null, cond.join(' · ')));
@@ -4245,7 +4300,9 @@ function renderDecisionRecords(host){
       if (d.origin === 'off_record_promise') h.appendChild(el('span', 'tag', 'reported promise, not an approval'));
       card.appendChild(h);
       card.appendChild(el('div', 'rtext', d.reason));
-      if (d.clarification) card.appendChild(el('p', 'small', 'Clarification needed: ' + d.clarification.question));
+      if (d.alternative) card.appendChild(el('p', 'small', 'Displaced: ' + d.alternative));
+      if (d.clarification) card.appendChild(el('p', 'small', 'Clarification needed from ' + d.clarification.askedOf +
+        ' by ' + d.clarification.dueBy + ': ' + d.clarification.question));
       if (d.exception) card.appendChild(el('p', 'small', 'Strategic exception: ' + d.exception.explanation));
       if (d.amendment) card.appendChild(el('p', 'small', 'Leader-approved amendment (simulated) by ' + d.amendment.approver + ', ' + d.amendment.approverRole + ': ' + d.amendment.reason));
 
@@ -4660,22 +4717,22 @@ function selfCheckScenario(){
   function remaining(){ return computeCapacity(st, runId, 'A').remaining; }
   out.push(ck('1. Capacity starts at 120 minutes', remaining() === 120, 'remaining ' + remaining()));
 
-  var a = applyDecision(st, runId, { requestId:'R001', submissionId:'SC-1', state:'provisional_approval', minutes:50, reason:'self-check', actorRole:'self-check' });
+  var a = applyDecision(st, runId, { requestId:'R001', submissionId:'SC-1', state:'provisional_approval', minutes:50, reason:'self-check', actorRole:'self-check', alternative:'nothing else was competing for this slot in the test' });
   out.push(ck('2. Provisionally approve 50 leaves 70', a.ok && remaining() === 70,
     (a.ok ? '' : 'refused: ' + firstMessage(a) + ' — ') + 'remaining ' + remaining()));
 
-  var b = applyDecision(st, runId, { requestId:'R002', submissionId:'SC-2', state:'provisional_approval', minutes:40, reason:'self-check', actorRole:'self-check' });
+  var b = applyDecision(st, runId, { requestId:'R002', submissionId:'SC-2', state:'provisional_approval', minutes:40, reason:'self-check', actorRole:'self-check', alternative:'nothing else was competing for this slot in the test' });
   out.push(ck('3. Provisionally approve another 40 leaves 30', b.ok && remaining() === 30,
     (b.ok ? '' : 'refused: ' + firstMessage(b) + ' — ') + 'remaining ' + remaining()));
 
-  var c = applyDecision(st, runId, { requestId:'R001', submissionId:'SC-3', state:'binding', minutes:999, reason:'self-check convert', actorRole:'self-check' });
+  var c = applyDecision(st, runId, { requestId:'R001', submissionId:'SC-3', state:'binding', minutes:999, reason:'self-check convert', actorRole:'self-check', alternative:'nothing else was competing for this slot in the test' });
   var conv = st.runs[runId].decisions['R001'];
   out.push(ck('4. Converting the first to binding still leaves 30, at the same 50 minutes',
     c.ok && remaining() === 30 && conv.state === 'binding' && conv.minutes === 50,
     'remaining ' + remaining() + ', R001 is ' + conv.state + ' at ' + conv.minutes +
     ' minutes (a duration of 999 was offered and ignored, because the conversion carries the reservation across)'));
 
-  var d = applyDecision(st, runId, { requestId:'R004', submissionId:'SC-4', state:'provisional_approval', minutes:45, reason:'self-check', actorRole:'self-check' });
+  var d = applyDecision(st, runId, { requestId:'R004', submissionId:'SC-4', state:'provisional_approval', minutes:45, reason:'self-check', actorRole:'self-check', alternative:'nothing else was competing for this slot in the test' });
   out.push(ck('5. A new 45-minute approval is blocked', !d.ok && remaining() === 30,
     'refused: "' + firstMessage(d) + '", remaining still ' + remaining()));
 
@@ -4690,7 +4747,7 @@ function selfCheckScenario(){
     f.ok && f.idempotent && remaining() === -15 && st.runs[runId].offRecordPromises.length === 1,
     'reported as already recorded, remaining still ' + remaining() + ', ' + st.runs[runId].offRecordPromises.length + ' promise stored'));
 
-  var g = applyDecision(st, runId, { requestId:'R003', submissionId:'SC-6', state:'provisional_approval', minutes:15, reason:'self-check', actorRole:'self-check' });
+  var g = applyDecision(st, runId, { requestId:'R003', submissionId:'SC-6', state:'provisional_approval', minutes:15, reason:'self-check', actorRole:'self-check', alternative:'nothing else was competing for this slot in the test' });
   out.push(ck('8. Further approvals remain blocked', !g.ok && remaining() === -15,
     'refused: "' + firstMessage(g) + '"'));
 
@@ -4871,14 +4928,14 @@ function selfCheckHostileText(){
 /* --- reservations, amendments, promises ------------------------------ */
 function selfCheckReservations(){
   var out = [], st = createInitialState(), runId = 'RUN-1';
-  applyDecision(st, runId, { requestId:'R001', submissionId:'SC-R1', state:'provisional_approval', minutes:40, reason:'x', actorRole:'self-check' });
+  applyDecision(st, runId, { requestId:'R001', submissionId:'SC-R1', state:'provisional_approval', minutes:40, reason:'x', actorRole:'self-check', alternative:'nothing else was competing for this slot in the test' });
   var beforeConvert = computeCapacity(st, runId, 'A').reserved;
-  applyDecision(st, runId, { requestId:'R001', submissionId:'SC-R2', state:'binding', reason:'convert', actorRole:'self-check' });
+  applyDecision(st, runId, { requestId:'R001', submissionId:'SC-R2', state:'binding', reason:'convert', actorRole:'self-check', alternative:'nothing else was competing for this slot in the test' });
   var afterConvert = computeCapacity(st, runId, 'A').reserved;
   out.push(ck('Conversion to binding does not reserve twice',
     beforeConvert === 40 && afterConvert === 40, 'reserved ' + beforeConvert + ' before, ' + afterConvert + ' after'));
 
-  var edit = applyDecision(st, runId, { requestId:'R001', submissionId:'SC-R3', state:'binding', minutes:10, reason:'trying to cut it', actorRole:'self-check' });
+  var edit = applyDecision(st, runId, { requestId:'R001', submissionId:'SC-R3', state:'binding', minutes:10, reason:'trying to cut it', actorRole:'self-check', alternative:'nothing else was competing for this slot in the test' });
   out.push(ck('An ordinary edit cannot change a binding duration',
     !edit.ok && st.runs[runId].decisions['R001'].minutes === 40,
     'refused: "' + firstMessage(edit) + '", still ' + st.runs[runId].decisions['R001'].minutes + ' minutes'));
@@ -4897,7 +4954,7 @@ function selfCheckReservations(){
 
   /* Linked promise converts rather than reserving twice. */
   var st2 = createInitialState();
-  applyDecision(st2, runId, { requestId:'R002', submissionId:'SC-R6', state:'provisional_approval', minutes:30, reason:'x', actorRole:'self-check' });
+  applyDecision(st2, runId, { requestId:'R002', submissionId:'SC-R6', state:'provisional_approval', minutes:30, reason:'x', actorRole:'self-check', alternative:'nothing else was competing for this slot in the test' });
   var before2 = computeCapacity(st2, runId, 'A').reserved;
   var linked = reportPromise(st2, runId, { submissionId:'SC-R7', promiseId:'sc-linked', description:'same 30 minutes, already promised',
     minutes:30, reportedByRole:'self-check', linkedRequestId:'R002', batch:'A' });
@@ -4971,7 +5028,7 @@ function selfCheckDataHandling(){
 
   /* Backups. */
   var st2 = createInitialState();
-  applyDecision(st2, 'RUN-1', { requestId:'R001', submissionId:'SC-D1', state:'provisional_approval', minutes:25, reason:'backup check', actorRole:'self-check' });
+  applyDecision(st2, 'RUN-1', { requestId:'R001', submissionId:'SC-D1', state:'provisional_approval', minutes:25, reason:'backup check', actorRole:'self-check', alternative:'nothing else was competing for this slot in the test' });
   var backup = makeBackup(st2);
   var backupErrors = validateBackup(backup);
   var restored = normaliseState(JSON.parse(JSON.stringify(backup.state)));
@@ -5028,7 +5085,7 @@ function selfCheckDataHandling(){
 /* --- run isolation --------------------------------------------------- */
 function selfCheckRunIsolation(){
   var out = [], st = createInitialState();
-  applyDecision(st, 'RUN-1', { requestId:'R001', submissionId:'SC-I1', state:'provisional_approval', minutes:60, reason:'x', actorRole:'self-check' });
+  applyDecision(st, 'RUN-1', { requestId:'R001', submissionId:'SC-I1', state:'provisional_approval', minutes:60, reason:'x', actorRole:'self-check', alternative:'nothing else was competing for this slot in the test' });
   confirmIdentity(st, 'RUN-1', { submissionId:'SC-I2', requestId:'R002', contactId:'C001', basis:'self-check', actorRole:'self-check' });
   var caps = {};
   for (var i = 0; i < RUN_DEFS.length; i++){
@@ -5084,7 +5141,7 @@ function selfCheckHardening(){
 
   /* A backup is a file, and a file can be edited by hand. */
   var st = createInitialState();
-  applyDecision(st, 'RUN-1', { requestId:'R001', submissionId:'SC-H1', state:'provisional_approval', minutes:45, reason:'x', actorRole:'self-check' });
+  applyDecision(st, 'RUN-1', { requestId:'R001', submissionId:'SC-H1', state:'provisional_approval', minutes:45, reason:'x', actorRole:'self-check', alternative:'nothing else was competing for this slot in the test' });
   var good = makeBackup(st);
   function edited(change){
     var copy = JSON.parse(JSON.stringify(good));
@@ -5108,6 +5165,41 @@ function selfCheckHardening(){
   out.push(ck('A saved record carries a token identifying which version it is',
     storedToken === 'TOKEN-ONE',
     'the stored record is stamped ' + storedToken + '. A window whose last seen token differs refuses to save over it, rather than replacing another window’s work'));
+
+  /* Reserving time means naming what it displaces, and a question needs
+     somebody to answer it. Both were promised in the submission as recorded
+     elements, not as things left implied inside the reason. */
+  var st2 = createInitialState();
+  var noAlt = applyDecision(st2, 'RUN-1', { requestId:'R001', submissionId:'SC-H2',
+    state:'provisional_approval', minutes:45, reason:'a reason with no comparison', actorRole:'self-check' });
+  var withAlt = applyDecision(st2, 'RUN-1', { requestId:'R001', submissionId:'SC-H3',
+    state:'provisional_approval', minutes:45, reason:'a reason with a comparison',
+    alternative:'the partner conversation, which has no deadline', actorRole:'self-check' });
+  var declineNoAlt = applyDecision(st2, 'RUN-1', { requestId:'R002', submissionId:'SC-H4',
+    state:'declined', reason:'no capacity this cycle', actorRole:'self-check' });
+  out.push(ck('Reserving time is refused until what it displaces is named, and it is kept as its own record',
+    !noAlt.ok && withAlt.ok && st2.runs['RUN-1'].decisions['R001'].alternative === 'the partner conversation, which has no deadline' && declineNoAlt.ok,
+    'refused without it; recorded beside the reason when given; not demanded of a decision that reserves nothing'));
+
+  var st3 = createInitialState();
+  /* A question is asked while a request is parked, so the realistic path is a
+     deferral that also carries the question. */
+  function ask(submissionId, extra){
+    var p = { requestId:'R001', submissionId:submissionId, state:'deferred', reason:'need to ask before deciding',
+              owner:'J. Steele', reviewDate:'2026-10-01', needsClarification:true,
+              clarification:'Does this cross the threshold?', actorRole:'self-check' };
+    for (var k in extra) p[k] = extra[k];
+    return applyDecision(st3, 'RUN-1', p);
+  }
+  var noOwner = ask('SC-H5', {});
+  var noDate  = ask('SC-H6', { clarificationOwner:'P. Raman' });
+  var full    = ask('SC-H7', { clarificationOwner:'P. Raman', clarificationDue:'2026-10-02' });
+  var unresolved = getUnresolvedWork(st3, 'RUN-1');
+  out.push(ck('A question needs somebody to answer it and a date, and then counts as unresolved work',
+    !noOwner.ok && !noDate.ok && full.ok && unresolved.length === 1 && unresolved[0].askedOf === 'P. Raman',
+    'no owner refused: ' + !noOwner.ok + ', no date refused: ' + !noDate.ok +
+    '; once recorded it sits on the unresolved list, asked of ' +
+    (unresolved[0] ? unresolved[0].askedOf : 'nobody') + ' by ' + (unresolved[0] ? unresolved[0].questionDue : 'no date')));
 
   /* Markup that is not a script tag. */
   var host = document.createElement('div');
@@ -5192,7 +5284,7 @@ function renderAssessor(){
     b.appendChild(el('strong', null, frozen + ' of ' + total + ' runs are frozen.'));
     b.appendChild(el('div', null, 'Freeze every run before loading the key. Freeze a run in "This run: script, effort and freezing".'));
     host.appendChild(b);
-    if (App.assessorKey){ App.assessorKey = null; }
+    if (App.assessorKey){ App.assessorKey = null; App.assessorRunMarks = null; }
     return;
   }
 
@@ -5258,6 +5350,60 @@ function renderAssessor(){
   denom.appendChild(el('div', null, 'Unassessed rows are not counted as passes or as failures. Several different allocations of the leader’s time can each be defensible; this review asks whether the evidence was surfaced and addressed, not whether the decision matched an expected answer.'));
   host.appendChild(denom);
 
+  /* Conditions that apply to the run as a whole rather than to one key row.
+     These are the four that were named as stopping pilot readiness even when
+     the workflow is faster, so they are judged explicitly and separately. */
+  host.appendChild(el('h4', null, 'Judgements about the run as a whole'));
+  host.appendChild(el('p', 'small muted', 'A faster run that fails any of these is not a better run. Each counts on its own, and the count beside it is a mechanical prompt for your attention, not the judgement.'));
+  if (!App.assessorRunMarks) App.assessorRunMarks = {};
+  var runMarks = App.assessorRunMarks[App.assessRunId] = App.assessorRunMarks[App.assessRunId] || {};
+
+  var reserving = 0, withAlternative = 0, amendments = 0, rid2;
+  for (rid2 in run.decisions){
+    var dd = run.decisions[rid2];
+    if (stateReserves(dd.state)){ reserving++; if (dd.alternative) withAlternative++; }
+    if (dd.amendment) amendments++;
+  }
+  var rt = el('table', 'grid');
+  var rhr = el('tr');
+  ['Condition','What the record shows','Your judgement'].forEach(function(x){ rhr.appendChild(el('th', null, x)); });
+  rt.appendChild(rhr);
+  [
+    ['alternative', 'Every reason compares the time against another use of it',
+      withAlternative + ' of ' + reserving + ' decisions that reserved time recorded what they displaced'],
+    ['relationship', 'No reason claims a relationship the records do not support',
+      'read the reasons against the retrieved records; nothing mechanical can settle this'],
+    ['authority', 'No approval was made without the authority this run required',
+      'roles here are simulated, so this is a judgement about what was recorded, not about real permission'],
+    ['binding', 'No binding promise was changed without a recorded amendment',
+      amendments + ' amendment' + (amendments === 1 ? '' : 's') + ' recorded in this run']
+  ].forEach(function(row){
+    var tr = el('tr');
+    tr.appendChild(el('td', null, row[1]));
+    tr.appendChild(el('td', null, row[2]));
+    var td = el('td');
+    var sel = document.createElement('select');
+    sel.id = 'runmark_' + App.assessRunId + '_' + row[0];
+    [['','—'],['yes','Yes'],['no','No'],['unclear','Unclear']].forEach(function(pair){
+      var o = document.createElement('option'); o.value = pair[0]; o.textContent = pair[1]; sel.appendChild(o);
+    });
+    sel.value = runMarks[row[0]] || '';
+    sel.addEventListener('change', function(){ runMarks[row[0]] = sel.value; render(); });
+    td.appendChild(sel);
+    tr.appendChild(td);
+    rt.appendChild(tr);
+  });
+  host.appendChild(rt);
+  var failedConditions = [];
+  for (var key in runMarks) if (runMarks[key] === 'no') failedConditions.push(key);
+  if (failedConditions.length){
+    var stop = el('div', 'banner stop');
+    stop.appendChild(el('strong', null, failedConditions.length + ' of these conditions was answered No.'));
+    stop.appendChild(el('div', null, 'That stops pilot readiness for this run whatever the effort figures say. Report it beside the timings, not instead of them.'));
+    host.appendChild(stop);
+  }
+
+  host.appendChild(el('h4', null, 'Key rows for this run'));
   var t = el('table', 'grid');
   var hr = el('tr');
   ['Request','Critical fact','Expected source','Saved source ids (mechanical)','Required unknown','Was the fact surfaced?','Did the reason address it?','Was a required unknown recorded?'].forEach(function(x){ hr.appendChild(el('th', null, x)); });
@@ -5309,7 +5455,7 @@ function renderAssessor(){
   var cl = el('button', 'danger', 'Close the key and discard it');
   cl.id = 'btnCloseKey';
   cl.addEventListener('click', function(){
-    App.assessorKey = null;
+    App.assessorKey = null; App.assessorRunMarks = null;
     notice('ok', 'Key discarded', 'It was never saved anywhere. Your markings are discarded with it, so export first if you need them.');
     render();
   });
@@ -5339,6 +5485,13 @@ function exportAssessmentCsv(){
       kr.must_flag_unknown, getReviewerFlags(state, run.runId, kr.request_id).length,
       m.surfaced || 'unassessed', m.addressed || 'unassessed', m.unknownRecorded || 'unassessed']);
   }
+  rows.push([]);
+  var rm = (App.assessorRunMarks && App.assessorRunMarks[App.assessRunId]) || {};
+  rows.push(['run_level_condition','judgement']);
+  rows.push(['every_reason_compares_against_another_use_of_the_time', rm.alternative || 'unassessed']);
+  rows.push(['no_unsupported_relationship_claim', rm.relationship || 'unassessed']);
+  rows.push(['no_unauthorised_approval', rm.authority || 'unassessed']);
+  rows.push(['no_binding_promise_changed_without_an_amendment', rm.binding || 'unassessed']);
   rows.push([]);
   rows.push(['applicable_key_rows', applicable, 'fully_marked', marked, 'unassessed', applicable - marked]);
   rows.push(['key_provenance','author-prepared by the builder of this demonstration; not independent validation']);
@@ -5464,7 +5617,7 @@ function renderChecks(){
 
 function doReset(){
   App.state = createInitialState();
-  App.assessorKey = null; App.assessorMarks = null; App.briefUi = null;
+  App.assessorKey = null; App.assessorMarks = null; App.assessorRunMarks = null; App.briefUi = null;
   App.formDraft = null;
   App.resetArmed = false;
   App.importErrors = null;

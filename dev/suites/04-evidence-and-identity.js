@@ -118,11 +118,31 @@ module.exports = H.defineSuite(
     await page.fill('#reasonIn', 'Deferring until the escalation threshold is confirmed; it displaces nothing because it reserves no time.');
     await page.fill('#ownerIn', 'R. Chandran');
     await page.fill('#reviewDateIn', '2026-09-01');
+    await A.fillAlternative(page);
     await page.click('#saveDecision');
     await page.waitForTimeout(220);
     rec.check('A clarification that has been asked for must actually be written',
       /Write the clarification question you need answered/.test(await page.textContent('#decisionBody')), 'required once ticked');
+
+    /* A question needs somebody to answer it and a date to answer it by. */
+    const askedOf = await page.inputValue('#clarificationOwnerIn');
+    rec.check('A clarification is offered to the relationship owner the records name',
+      askedOf === 'The leader',
+      'the records give this contact\'s relationship owner as "' + askedOf + '", offered by default and still editable');
     await page.fill('#clarificationIn', 'Does this escalation cross the threshold that requires the leader?');
+    await page.fill('#clarificationOwnerIn', '   ');
+    await A.fillAlternative(page);
+    await page.click('#saveDecision');
+    await page.waitForTimeout(240);
+    rec.check('A question with nobody attached to it is refused',
+      /Record who is being asked/.test(await page.textContent('#decisionBody')), 'refused');
+    await page.fill('#clarificationOwnerIn', 'The leader');
+    await page.click('#saveDecision');
+    await page.waitForTimeout(240);
+    rec.check('A question with no date to answer it by is refused',
+      /Record the date you need the answer by/.test(await page.textContent('#decisionBody')), 'refused');
+    await page.fill('#clarificationDueIn', '2026-09-01');
+    await A.fillAlternative(page);
     await page.click('#saveDecision');
     await page.waitForTimeout(320);
 
@@ -136,6 +156,32 @@ module.exports = H.defineSuite(
       /OVERDUE since 2026-09-01/.test(await page.textContent('#requestList')), 'badge on the card');
     rec.check('Overdue work is not closed automatically',
       /do not resolve themselves and they are not closed automatically/.test(unresolved), 'stated');
+    rec.check('A question that has been asked and not answered is unresolved work in its own right',
+      /Awaiting an answer|Does this escalation cross the threshold/.test(unresolved) &&
+      /The leader/.test(unresolved),
+      'the open question appears on the unresolved list with who was asked and by when');
+
+    /* ---- reserving time means naming what it displaces ---- */
+    await A.switchRun(page, 'RUN-1');
+    await A.selectRequest(page, 'R001');
+    await page.check('#act_provisional_approval');
+    await page.waitForTimeout(160);
+    await page.fill('#minutesIn', '45');
+    await page.fill('#reasonIn', 'A reason with no comparison against another use of the time.');
+    await page.fill('#alternativeIn', '   ');
+    await page.click('#saveDecision');
+    await page.waitForTimeout(240);
+    rec.check('Reserving time is refused until what it displaces is named',
+      /Record what this displaces/.test(await page.textContent('#decisionBody')) && await A.remaining(page) === 120,
+      'refused, and nothing was reserved');
+    await page.fill('#alternativeIn', 'The partner conversation, which has no deadline attached to it.');
+    await page.click('#saveDecision');
+    await page.waitForTimeout(300);
+    const displaced = await page.evaluate(() => App.state.runs['RUN-1'].decisions['R001'].alternative);
+    rec.check('What the time displaced is kept beside the reason, not inside it',
+      displaced === 'The partner conversation, which has no deadline attached to it.' && await A.remaining(page) === 75,
+      'recorded as its own field: "' + displaced + '"');
+    await A.switchRun(page, 'RUN-4');
 
     /* ---- what is kept behind a decision ---- */
     await A.openPanel(page, 'secHistory');

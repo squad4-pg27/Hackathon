@@ -100,6 +100,19 @@ RUN-1 first, then RUN-2. Reviewer 2 does RUN-3 first, then RUN-4.
 **2. They decide the four initial requests.** Do not help. Do not hint. If they
 ask what a control does, answer; if they ask what they should decide, do not.
 
+Two fields will stop them if they skip them, and both are deliberate:
+
+- **"What this displaces"** appears whenever an action reserves time. Reserving
+  the leader's time means some other use of it does not happen, and naming that
+  other use is part of the decision, not commentary on it. If genuinely nothing
+  was competing, they say so — that is a valid answer and a recorded one.
+- **A clarification needs somebody to answer it and a date.** The relationship
+  owner from the records is offered by default and stays editable. Nothing is
+  sent; it is recorded, and it sits on the unresolved list until someone acts.
+
+Both are recorded as their own fields rather than buried inside the reason,
+because the assessor has to be able to find them afterwards.
+
 **3. Only when all four are decided, release the late arrival.** Left column →
 **Release late request** → confirm. The time is logged automatically, along with
 how many decisions had already been recorded.
@@ -164,17 +177,32 @@ The assessor is whoever reviewed the key. Do this **once per copy**.
 4. Record **who reviewed the key**, when, and what they found. Until that is
    filled in, every number is author-prepared.
 5. Pick the run to assess. Only the key rows that run could have seen are shown.
-6. For each row: read the reviewer's recorded reason, then mark three things
-   **Yes / No / Unclear** — was the fact surfaced, did the reason address it, was
-   a required unknown recorded.
+6. **First, the four judgements about the run as a whole.** These are the
+   conditions that stop pilot readiness even when the workflow is faster, so
+   they are judged separately from the key rows:
+
+   - Every reason compares the time against another use of it
+   - No reason claims a relationship the records do not support
+   - No approval was made without the authority this run required
+   - No binding promise was changed without a recorded amendment
+
+   Each shows a count beside it — how many reserving decisions recorded what
+   they displaced, how many amendments exist. **The count is a prompt for your
+   attention, not the judgement.** If you answer No to any of them, the panel
+   says so plainly: that stops pilot readiness for the run whatever the
+   timings say.
+
+7. **Then the key rows.** For each: read the reviewer's recorded reason, then
+   mark three things **Yes / No / Unclear** — was the fact surfaced, did the
+   reason address it, was a required unknown recorded.
 
    The **saved source ids** column is a mechanical comparison of identifiers. It
    is a prompt for your attention, **not** the judgement. Matching a keyword is
    not the same as addressing a fact.
-7. **Export this assessment as CSV** before you refresh anything. The key and
+8. **Export this assessment as CSV** before you refresh anything. The key and
    your markings live in the page's memory only and are discarded on refresh —
    deliberately, so no answer can leak into a backup.
-8. Repeat for the other copy.
+9. Repeat for the other copy.
 
 ### Reporting what you found
 
@@ -185,6 +213,12 @@ The assessor is whoever reviewed the key. Do this **once per copy**.
   marked, how many were left unassessed. Unassessed is not a pass and not a fail.
 - Say **"Synthetic demonstration on 10 cases. Not statistical validation."**
 - Say the key is **author-prepared**, and name whoever reviewed it.
+- Report the **four run-level judgements** beside the timings. A run that was
+  faster but failed one of them did not succeed.
+- Note the **reviewer-learning risk**: each reviewer does their second batch
+  knowing the first. The design reverses which mode comes first so the effect
+  does not fall entirely on one condition, but with two reviewers it cannot be
+  removed. Say so rather than ignoring it.
 - **40% lower effort is the target. It is not a result until the runs say so** —
   and with four runs it will not be a statistically meaningful one either way.
 - If the brief arm produced rejected or unusable briefs, **report that**. It is a
