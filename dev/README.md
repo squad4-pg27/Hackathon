@@ -78,7 +78,7 @@ file breaks and what the application should say about it.
 - They check **behaviour, not judgement**. Nothing here can tell you whether
   the fixtures read as realistic or whether the evidence key's judgements are
   the right ones. Those need a person.
-- A full pass is **not** a claim that the application is free of faults. **Nine
+- A full pass is **not** a claim that the application is free of faults. **Twelve
   faults have been found by these checks after the application was believed
   finished**, which is the point of having them.
 
@@ -100,7 +100,11 @@ Each one now has a permanent check, so it cannot come back unnoticed.
 | **Stress: two windows** | **Two windows open on the same file silently overwrote each other's work.** The second to save erased the first, with no warning |
 | **Stress: backups** | **A hand-edited backup carrying a negative or impossible reservation was accepted**, producing negative reserved minutes and more than 120 remaining |
 
-The last four were found by `08-stress.js` and are the reason it exists.
+| **Stress: carried reservations** | **Converting a provisional hold to binding demanded a fresh statement of what it displaced**, contradicting the rule that a carried reservation is not a new one, and inviting two different answers about one reservation |
+| **Stress: older records** | A saved record from before the displacement and question-owner fields existed rendered as **"question for undefined by undefined"** |
+| **Stress: amending** | The displacement box was the only field not pre-filled when amending a decision, so an amendment invited a different answer about the same reservation |
+
+The last seven were found by `08-stress.js` and are the reason it exists.
 Two of the "failures" it reported first time were faults in the checks
 themselves, not the application — both are noted in the suite where they
 were corrected.

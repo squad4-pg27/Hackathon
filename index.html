@@ -1451,8 +1451,12 @@ function validateDecision(state, runId, proposal){
     if (isBlank(proposal.amendReason)) errors.push({ field:'amendReason', message:'Record why the amendment was approved. This is separate from the decision reason.' });
   }
   /* Reserving the leader's time spends something that cannot be spent twice.
-     What it displaces is recorded next to the reason, not left implied. */
-  if (target.reserves && isBlank(proposal.alternative)){
+     What it displaces is recorded next to the reason, not left implied.
+     A carried reservation is not a new one: converting a provisional hold, or
+     stepping a binding back to one, displaces exactly what it already
+     displaced, so the statement is carried across rather than asked for
+     again. Asking twice invites two different answers about one reservation. */
+  if (target.reserves && !gate.keep && isBlank(proposal.alternative)){
     errors.push({ field:'alternative', message:'Record what this displaces. Reserving time here means some other use of it does not happen; name that other use, or say that nothing was competing for it.' });
   }
   if (proposal.needsClarification){
@@ -1538,7 +1542,9 @@ function applyDecision(state, runId, proposal){
       simulated: true
     } : null,
     exception: proposal.exception ? { explanation:String(proposal.exceptionReason).trim() } : null,
-    alternative: isBlank(proposal.alternative) ? null : String(proposal.alternative).trim(),
+    alternative: gate.keep && previous && previous.alternative
+      ? previous.alternative
+      : (isBlank(proposal.alternative) ? null : String(proposal.alternative).trim()),
     clarification: proposal.needsClarification ? {
       question: String(proposal.clarification).trim(),
       askedOf: String(proposal.clarificationOwner).trim(),
@@ -2601,6 +2607,16 @@ function normaliseState(state){
     if (r0.frozen === undefined){ r0.frozen = false; r0.frozenAt = null; }
     if (!r0.releaseLog) r0.releaseLog = [];
     if (!r0.packets) r0.packets = {};
+    /* Records saved before a question carried an owner and a date. Fill them
+       in honestly rather than letting the interface print "undefined". */
+    for (var drid in r0.decisions){
+      var dec = r0.decisions[drid];
+      if (dec && dec.clarification){
+        if (!dec.clarification.askedOf) dec.clarification.askedOf = 'not recorded';
+        if (!dec.clarification.dueBy) dec.clarification.dueBy = null;
+      }
+      if (dec && dec.alternative === undefined) dec.alternative = null;
+    }
     if (!r0.effort) r0.effort = { preparation:'', assessment:'', verification:'', correction:'', clarification:'', logging:'', elapsedCopyPasteSeconds:'', turnaround:'', notes:'' };
   }
   for (var runId in state.runs){
@@ -3284,12 +3300,12 @@ function blankDraft(state, runId, request){
     state: '',
     minutes: existing && existing.minutes ? String(existing.minutes) : String(request.minutes_requested),
     reason: '',
+    alternative: existing && existing.alternative ? existing.alternative : '',
     owner: existing && existing.owner ? existing.owner.name : '',
     reviewDate: existing && existing.owner ? existing.owner.reviewDate : '',
     ackBy: '', ackConfirmed: false,
     amendApprover: '', amendApproverRole: 'Leader (simulated)', amendReason: '',
     exception: false, exceptionReason: '',
-    alternative: '',
     needsClarification: false, clarification: '',
     clarificationOwner: defaultClarificationOwner(state, runId, request),
     clarificationDue: '',
@@ -3564,6 +3580,10 @@ function renderDecisionForm(){
       var box = el('div', 'banner ok');
       box.appendChild(el('strong', null, 'Reservation carried across unchanged: ' + kept + ' minutes.'));
       box.appendChild(el('div', null, 'Converting does not reserve the minutes a second time, and no capacity is used. To change the duration, amend the current state first, then convert.'));
+      if (existing && existing.alternative){
+        box.appendChild(el('div', null, 'Displacing, unchanged: ' + existing.alternative));
+        box.appendChild(el('div', null, 'The same reservation displaces the same thing, so that is carried across with it rather than asked for again.'));
+      }
       host.appendChild(box);
     } else {
       fieldText(host, 'minutesIn', 'Minutes to reserve', draft.minutes, function(v){ draft.minutes = v; }, 'number');
@@ -3930,7 +3950,10 @@ function renderUnresolved(){
       tr.appendChild(el('td', null, it.requestId));
       tr.appendChild(el('td', null, it.batch));
       tr.appendChild(el('td', null, it.kind +
-        (it.question ? ' — question for ' + it.askedOf + ' by ' + it.questionDue + ': ' + it.question : '')));
+        (it.question
+          ? ' — question for ' + (it.askedOf || 'nobody recorded') +
+            (it.questionDue ? ' by ' + it.questionDue : ' with no date recorded') + ': ' + it.question
+          : '')));
       tr.appendChild(el('td', null, it.owner));
       tr.appendChild(el('td', null, it.reviewDate || 'no date recorded'));
       var td = el('td', null, it.overdue ? 'OVERDUE by ' + it.daysOverdue + ' day' + (it.daysOverdue === 1 ? '' : 's') : 'open');
@@ -4245,7 +4268,8 @@ function renderHistory(){
     if (h.owner) cond.push('Owner ' + h.owner.name + ', review by ' + h.owner.reviewDate);
     if (h.acknowledgement) cond.push('Acknowledged by ' + h.acknowledgement.by);
     if (h.alternative) cond.push('Displaced: ' + h.alternative);
-    if (h.clarification) cond.push('Asked ' + h.clarification.askedOf + ' by ' + h.clarification.dueBy + ': ' + h.clarification.question);
+    if (h.clarification) cond.push('Asked ' + (h.clarification.askedOf || 'nobody recorded') +
+      (h.clarification.dueBy ? ' by ' + h.clarification.dueBy : ' with no date recorded') + ': ' + h.clarification.question);
     if (h.exception) cond.push('Strategic exception: ' + h.exception.explanation);
     if (h.type === 'promise_reported') cond.push('Reported, not approved.');
     tr.appendChild(el('td', null, cond.join(' · ')));
@@ -4301,8 +4325,8 @@ function renderDecisionRecords(host){
       card.appendChild(h);
       card.appendChild(el('div', 'rtext', d.reason));
       if (d.alternative) card.appendChild(el('p', 'small', 'Displaced: ' + d.alternative));
-      if (d.clarification) card.appendChild(el('p', 'small', 'Clarification needed from ' + d.clarification.askedOf +
-        ' by ' + d.clarification.dueBy + ': ' + d.clarification.question));
+      if (d.clarification) card.appendChild(el('p', 'small', 'Clarification needed from ' + (d.clarification.askedOf || 'nobody recorded') +
+        (d.clarification.dueBy ? ' by ' + d.clarification.dueBy : ' with no date recorded') + ': ' + d.clarification.question));
       if (d.exception) card.appendChild(el('p', 'small', 'Strategic exception: ' + d.exception.explanation));
       if (d.amendment) card.appendChild(el('p', 'small', 'Leader-approved amendment (simulated) by ' + d.amendment.approver + ', ' + d.amendment.approverRole + ': ' + d.amendment.reason));
 

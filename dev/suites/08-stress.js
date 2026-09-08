@@ -357,6 +357,44 @@ module.exports = H.defineSuite(
       afterSwitching.matches && afterSwitching.listed > 0,
       'settled on ' + afterSwitching.run + ' showing batch ' + afterSwitching.batch + ' with ' + afterSwitching.listed + ' requests');
 
+    /* ---- 14. the fields added after the first stress round ---- */
+    const carried = await page.evaluate(() => {
+      const st = createInitialState();
+      applyDecision(st, 'RUN-1', { requestId:'R001', submissionId:'K1', state:'provisional_approval',
+        minutes:50, reason:'hold', alternative:'the partner conversation', actorRole:'t' });
+      const convert = applyDecision(st, 'RUN-1', { requestId:'R001', submissionId:'K2', state:'binding', reason:'confirm', actorRole:'t' });
+      const afterConvert = st.runs['RUN-1'].decisions['R001'].alternative;
+      const stepBack = applyDecision(st, 'RUN-1', { requestId:'R001', submissionId:'K3', state:'provisional_approval',
+        reason:'step back', amendApprover:'L', amendApproverRole:'Leader', amendReason:'leader asked', actorRole:'t' });
+      const brandNew = applyDecision(st, 'RUN-1', { requestId:'R002', submissionId:'K4', state:'provisional_approval',
+        minutes:30, reason:'a new reservation', actorRole:'t' });
+      return { convert: convert.ok, afterConvert, stepBack: stepBack.ok, brandNew: brandNew.ok,
+               message: brandNew.errors.length ? brandNew.errors[0].message : '' };
+    });
+    rec.check('A carried reservation carries what it displaces, rather than asking again',
+      carried.convert && carried.stepBack && carried.afterConvert === 'the partner conversation' && !carried.brandNew,
+      'converting and stepping back both accepted, still displacing ' + JSON.stringify(carried.afterConvert) +
+      '; a genuinely new reservation is still refused without one');
+
+    const older = await page.evaluate(() => {
+      const st = createInitialState();
+      applyDecision(st, 'RUN-1', { requestId:'R001', submissionId:'O1', state:'deferred', reason:'park',
+        owner:'J. Steele', reviewDate:'2026-10-01', needsClarification:true, clarification:'Is this above the threshold?',
+        clarificationOwner:'P. Raman', clarificationDue:'2026-10-02', actorRole:'t' });
+      /* Degrade it to the shape a record saved before these fields would have. */
+      st.runs['RUN-1'].decisions['R001'].clarification = { question:'Is this above the threshold?', answered:false };
+      delete st.runs['RUN-1'].decisions['R001'].alternative;
+      const repaired = normaliseState(JSON.parse(JSON.stringify(st)));
+      const w = getUnresolvedWork(repaired, 'RUN-1')[0];
+      const host = document.createElement('div');
+      host.appendChild(el('div', 'rtext', w.kind + ' — question for ' + (w.askedOf || 'nobody recorded') +
+        (w.questionDue ? ' by ' + w.questionDue : ' with no date recorded') + ': ' + w.question));
+      const text = host.textContent;
+      return { text, undef: /undefined/.test(text) };
+    });
+    rec.check('A record saved before these fields existed never renders the word undefined',
+      !older.undef, 'it reads: ' + older.text);
+
     rec.check('No uncaught errors under any of this',
       page.errors.length === 0 && hammer.errors.length === 0 && w1.errors.length === 0 && w2.errors.length === 0,
       [...page.errors, ...hammer.errors, ...w1.errors, ...w2.errors].join(' | ') || 'none');
