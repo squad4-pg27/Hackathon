@@ -122,4 +122,4 @@ node dev/run-all.js
 261 checks across eight suites, including a real page reload, a real backup and
 restore, deliberately broken files, two windows fighting over the same storage,
 and a 500-step random walk through every transition. `dev/README.md` lists the
-twelve faults these checks have already caught.
+seventeen faults these checks have already caught.

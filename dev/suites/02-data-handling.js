@@ -104,9 +104,18 @@ module.exports = H.defineSuite(
 
     const crmDecision = await A.decide(page, 'Q002', { state:'provisional_approval', minutes:60,
       reason:'Renewal is gated on this review and the close date is fixed.' });
+    const crmOrphans = await page.evaluate(() => getOrphanedDecisions(App.state, 'RUN-1'));
+    /* 45 minutes were reserved earlier against R001, which is not in the CRM
+       export. Those minutes stay reserved: importing different records does
+       not un-promise time that was already promised. So 45 + 60 = 105. */
     rec.check('Decisions and capacity work on imported CRM records',
-      /Decision saved/.test(crmDecision.alert) && await A.remaining(page) === 60,
-      await A.capacityText(page));
+      /Decision saved/.test(crmDecision.alert) && await A.remaining(page) === 15,
+      await A.capacityText(page) + ' — 60 minutes for Q002 on top of the 45 reserved before the import');
+    rec.check('A decision made before the import keeps its minutes and is surfaced, not silently dropped',
+      crmOrphans.length === 1 && crmOrphans[0].requestId === 'R001' && crmOrphans[0].minutes === 45,
+      crmOrphans.length + ' decision no longer matches the loaded records: ' +
+      (crmOrphans[0] ? crmOrphans[0].requestId + ' still holding ' + crmOrphans[0].minutes + ' minutes' : 'none') +
+      '. Before this was fixed those minutes vanished from capacity without a word');
 
     /* Put the built-in fixtures back for the checks that follow. */
     await A.openPanel(page, 'secTech');

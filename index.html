@@ -1349,8 +1349,11 @@ function reservedMinutes(state, runId, batch){
   var run = getRun(state, runId), total = 0, rid;
   for (rid in run.decisions){
     var d = run.decisions[rid];
-    var req = getRequestById(state, rid);
-    if (!req || req.batch !== batch) continue;
+    /* The batch is recorded on the decision itself. Importing records that no
+       longer contain the request must not quietly release its minutes: the
+       time was promised, and changing the source data does not un-promise it. */
+    var decisionBatch = d.batch || (getRequestById(state, rid) || {}).batch;
+    if (decisionBatch !== batch) continue;
     if (stateReserves(d.state)) total += d.minutes;
   }
   /* Off-record promises are added by Step 3B. An empty list contributes
@@ -1545,11 +1548,14 @@ function applyDecision(state, runId, proposal){
     alternative: gate.keep && previous && previous.alternative
       ? previous.alternative
       : (isBlank(proposal.alternative) ? null : String(proposal.alternative).trim()),
+    /* A question is open for as long as it is attached to the current
+       decision. It closes when the next decision on this request is recorded,
+       which is the only thing that can close it. There is deliberately no flag
+       here that nothing in the application could ever set. */
     clarification: proposal.needsClarification ? {
       question: String(proposal.clarification).trim(),
       askedOf: String(proposal.clarificationOwner).trim(),
-      dueBy: String(proposal.clarificationDue).trim(),
-      answered: false
+      dueBy: String(proposal.clarificationDue).trim()
     } : null
   };
   run.decisions[proposal.requestId] = decision;
@@ -2148,6 +2154,20 @@ function getOutcomesForDecision(state, runId, decisionId){
   return out;
 }
 
+/* Decisions whose request is not in the records now in use. Their minutes are
+   still reserved, because the promise was made; they are surfaced rather than
+   left invisible. */
+function getOrphanedDecisions(state, runId){
+  var run = getRun(state, runId), out = [], rid;
+  for (rid in run.decisions){
+    if (getRequestById(state, rid)) continue;
+    var d = run.decisions[rid];
+    out.push({ requestId: rid, batch: d.batch, state: d.state, minutes: d.minutes,
+               reserves: stateReserves(d.state), snapshotId: d.snapshotId, at: d.at });
+  }
+  return out;
+}
+
 /* ---------- 5g. Unresolved and overdue work -------------------------- */
 function todayIso(){
   var d = new Date();
@@ -2162,7 +2182,8 @@ function getUnresolvedWork(state, runId){
   var run = getRun(state, runId), out = [], rid;
   for (rid in run.decisions){
     var d = run.decisions[rid];
-    var openQuestion = d.clarification && !d.clarification.answered;
+    /* answered is read only so that a record saved earlier still behaves. */
+    var openQuestion = !!d.clarification && d.clarification.answered !== true;
     if (!UNRESOLVED_STATES[d.state] && !openQuestion) continue;
     var due = UNRESOLVED_STATES[d.state] && d.owner ? d.owner.reviewDate
             : (openQuestion ? d.clarification.dueBy : null);
@@ -3766,13 +3787,35 @@ var EFFORT_FIELDS = [
   ['clarification','Clarification (minutes)'],
   ['logging','Logging (minutes)']
 ];
+/* Effort is read the same way a duration is: plain digits only. Number() would
+   quietly ignore "twelve", subtract a negative, and read "1e2" as a hundred,
+   which is a silent misreading of the figure the whole comparison rests on. */
+function readEffortField(value){
+  var raw = value === undefined || value === null ? '' : String(value).trim();
+  if (raw === '') return { entered:false, ok:true, minutes:0 };
+  if (!/^\d+$/.test(raw)) return { entered:true, ok:false, minutes:0, raw:raw };
+  return { entered:true, ok:true, minutes:Number(raw), raw:raw };
+}
+function effortReadings(effort){
+  var out = [], i;
+  for (i = 0; i < EFFORT_FIELDS.length; i++){
+    var r = readEffortField(effort[EFFORT_FIELDS[i][0]]);
+    r.field = EFFORT_FIELDS[i][0]; r.label = EFFORT_FIELDS[i][1];
+    out.push(r);
+  }
+  return out;
+}
 function effortTotal(effort){
-  var t = 0, any = false;
-  for (var i = 0; i < EFFORT_FIELDS.length; i++){
-    var v = Number(effort[EFFORT_FIELDS[i][0]]);
-    if (effort[EFFORT_FIELDS[i][0]] !== '' && isFinite(v)){ t += v; any = true; }
+  var readings = effortReadings(effort), t = 0, any = false;
+  for (var i = 0; i < readings.length; i++){
+    if (readings[i].entered && readings[i].ok){ t += readings[i].minutes; any = true; }
   }
   return any ? t : null;
+}
+function effortUnreadable(effort){
+  var readings = effortReadings(effort), bad = [];
+  for (var i = 0; i < readings.length; i++) if (readings[i].entered && !readings[i].ok) bad.push(readings[i]);
+  return bad;
 }
 function oldestUnresolvedDays(state, runId){
   var items = getUnresolvedWork(state, runId), worst = 0;
@@ -3822,6 +3865,19 @@ function renderRunPanel(){
   host.appendChild(grid);
   var tot = effortTotal(run.effort);
   host.appendChild(el('p', null, 'Recorded human effort in this run: ' + (tot === null ? 'nothing entered yet' : tot + ' minutes') + '.'));
+  var unreadable = effortUnreadable(run.effort);
+  if (unreadable.length){
+    var ub = el('div', 'banner stop');
+    ub.appendChild(el('strong', null, unreadable.length + ' figure' + (unreadable.length === 1 ? '' : 's') + ' could not be read as minutes, and ' +
+      (unreadable.length === 1 ? 'is' : 'are') + ' not counted in the total above.'));
+    var ul = el('ul');
+    for (var ui = 0; ui < unreadable.length; ui++){
+      ul.appendChild(el('li', null, unreadable[ui].label + ': "' + unreadable[ui].raw + '". Write it in plain digits, for example 12.'));
+    }
+    ub.appendChild(ul);
+    ub.appendChild(el('div', null, 'A figure that is silently ignored would make this run look cheaper than it was, so it is refused rather than guessed at.'));
+    host.appendChild(ub);
+  }
   var unres = getUnresolvedWork(state, runId);
   host.appendChild(el('p', 'small', 'Unresolved at this moment: ' + unres.length + (unres.length ? ', oldest overdue by ' + oldestUnresolvedDays(state, runId) + ' days' : '') + '.'));
 
@@ -4054,6 +4110,30 @@ function renderReservations(){
     host.appendChild(t);
   });
   if (!any) host.appendChild(el('p', 'small muted', 'No minutes are reserved anywhere in this run.'));
+
+  var orphans = getOrphanedDecisions(state, runId);
+  if (orphans.length){
+    var ob = el('div', 'banner warn');
+    ob.appendChild(el('strong', null, orphans.length + ' decision' + (orphans.length === 1 ? '' : 's') +
+      ' in this run refer to requests that are not in the records now in use.'));
+    ob.appendChild(el('div', null, 'That happens after importing a different set of records. Any minutes they reserved are still counted, because the time was promised and changing the source data does not un-promise it.'));
+    var ot = el('table', 'grid');
+    var ohr = el('tr');
+    ['Request','Batch','State','Minutes still reserved','Recorded against'].forEach(function(x){ ohr.appendChild(el('th', null, x)); });
+    ot.appendChild(ohr);
+    for (var oi = 0; oi < orphans.length; oi++){
+      var o = orphans[oi], otr = el('tr');
+      otr.appendChild(el('td', null, o.requestId));
+      otr.appendChild(el('td', null, o.batch || 'not recorded'));
+      otr.appendChild(el('td', null, STATES[o.state] ? STATES[o.state].label : o.state));
+      otr.appendChild(el('td', null, o.reserves ? String(o.minutes) : '0'));
+      otr.appendChild(el('td', null, o.snapshotId || 'not recorded'));
+      ot.appendChild(otr);
+    }
+    ob.appendChild(ot);
+    ob.appendChild(el('div', null, 'To act on one of these, bring back the records it was decided against, or record the outcome somewhere it can be seen.'));
+    host.appendChild(ob);
+  }
 }
 
 /* ---------- Report an off-record promise ----------------------------- */
@@ -4218,9 +4298,20 @@ function renderPolicyPanel(){
   go.addEventListener('click', function(){
     var res = recordPolicyVersion(App.state, { version:d.version, effectiveDate:d.effectiveDate, summary:d.summary, actorRole:App.state.ui.role });
     if (!res.ok){ d.errors = res.errors; renderPolicyPanel(); return; }
+    var recorded = String(d.version).trim();
     App.policyDraft = null;
     persist();
-    notice('ok', 'Policy change recorded', 'New decisions will record the new priority version. Past decisions keep the version they were made under.');
+    /* A version dated before one already in force is a historical record, not
+       the version in force. Say which one new decisions will actually use. */
+    var nowCurrent = getCurrentPriorityVersion(App.state).version;
+    if (nowCurrent === recorded){
+      notice('ok', 'Policy change recorded',
+        'New decisions will record priority version ' + recorded + '. Past decisions keep the version they were made under.');
+    } else {
+      notice('warn', 'Policy change recorded, but it is not the version in force',
+        'It takes effect on ' + d.effectiveDate + ', which is earlier than version ' + nowCurrent +
+        '. New decisions will still record ' + nowCurrent + '. It is kept as a historical record.');
+    }
     render();
   });
   row2.appendChild(go);
@@ -4548,8 +4639,15 @@ function handleCsvImport(fileList){
     App.state.history.push({ eventId: uid('EV'), at: nowIso(), type: 'sources_imported', detail: 'Snapshot ' + snapshotId + ' added. ' + App.state.sourceSnapshots.length + ' snapshots kept.' });
     App.state.updatedAt = nowIso();
     var saved = persist();
-    notice(saved ? 'ok' : 'stop', saved ? 'Records imported' : 'Records imported but NOT saved',
-      'Snapshot ' + snapshotId + ' is now active. ' + App.state.sourceSnapshots.length + ' input snapshots are kept, so earlier decisions still point at the inputs they were made on.' + (saved ? '' : ' ' + App.saveMessage));
+    var stranded = 0;
+    for (var runId in App.state.runs) stranded += getOrphanedDecisions(App.state, runId).length;
+    notice(saved ? (stranded ? 'warn' : 'ok') : 'stop',
+      saved ? (stranded ? 'Records imported — some decisions no longer match them' : 'Records imported') : 'Records imported but NOT saved',
+      'Snapshot ' + snapshotId + ' is now active. ' + App.state.sourceSnapshots.length +
+      ' input snapshots are kept, so earlier decisions still point at the inputs they were made on.' +
+      (stranded ? ' ' + stranded + ' decision' + (stranded === 1 ? '' : 's') +
+        ' refer to requests that are not in these records. Their reserved minutes are still counted, and they are listed under Current reservations and reconciliation.' : '') +
+      (saved ? '' : ' ' + App.saveMessage));
     render();
   }
 }
@@ -5360,6 +5458,17 @@ function renderAssessor(){
     var req = getRequestById(state, kr.request_id);
     if (!req || req.batch !== run.batch) continue;      /* only what this run could have seen */
     rows.push({ index:k, key:kr, request:req });
+  }
+  if (!rows.length){
+    var mismatch = el('div', 'banner stop');
+    mismatch.appendChild(el('strong', null, 'None of the ' + App.assessorKey.rows.length + ' rows in this key matches the records now in use.'));
+    mismatch.appendChild(el('div', null, 'A key is written against one set of records. Either a different set has been imported since, or this is the key for another dataset. Nothing can be assessed until they match, and an empty table here is not a result.'));
+    var sample = [];
+    for (var mi = 0; mi < Math.min(3, App.assessorKey.rows.length); mi++) sample.push(App.assessorKey.rows[mi].request_id);
+    var have = getVisibleRequests(state, run.runId, run.batch).map(function(r){ return r.request_id; });
+    mismatch.appendChild(el('div', null, 'The key refers to ' + sample.join(', ') + '…; the records in use offer ' + (have.join(', ') || 'nothing') + '.'));
+    host.appendChild(mismatch);
+    return;
   }
   host.appendChild(el('p', 'small muted', rows.length + ' key rows apply to batch ' + run.batch + ', which is what ' + run.runId + ' covered. Rows for the other batch are not shown, because this run never saw those requests.'));
 

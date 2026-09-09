@@ -263,6 +263,25 @@ module.exports = H.defineSuite(
     await page.selectOption('#' + runMarkIds.find(i => /relationship$/.test(i)), 'yes');
     await page.waitForTimeout(150);
 
+    /* A key written against other records must not read as an empty result. */
+    const mismatch = await page.evaluate(() => {
+      const snap = JSON.parse(JSON.stringify(getSources(App.state)));
+      snap.requests = snap.requests.map(r => Object.assign({}, r, { request_id: r.request_id.replace('R', 'Z') }));
+      App.state.sourceSnapshots.push({ snapshotId:'SNAP-RENAMED', importedAt:new Date().toISOString(), label:'renamed', data:snap });
+      const keep = App.state.activeSnapshotId;
+      App.state.activeSnapshotId = 'SNAP-RENAMED';
+      render();
+      const text = document.getElementById('assessorBody').innerText.replace(/\s+/g, ' ');
+      App.state.activeSnapshotId = keep;
+      render();
+      return text;
+    });
+    rec.check('A key that matches none of the loaded records says so, rather than showing an empty table',
+      /None of the \d+ rows in this key matches the records now in use/.test(mismatch) &&
+      /an empty table here is not a result/.test(mismatch),
+      (mismatch.match(/None of the \d+ rows in this key matches[^.]*\./) || ['no warning'])[0]);
+    await A.openPanel(page, 'secAssessor');
+
     const marks = await page.$$eval('#assessorBody select[id^=mark_]', n => n.map(x => x.id).slice(0, 3));
     for (const id of marks){ await page.selectOption('#' + id, 'yes'); await page.waitForTimeout(140); }
     rec.check('Marking a row updates the denominator',

@@ -395,6 +395,63 @@ module.exports = H.defineSuite(
     rec.check('A record saved before these fields existed never renders the word undefined',
       !older.undef, 'it reads: ' + older.text);
 
+    /* ---- 15. records changing underneath decisions already made ---- */
+    const stranded = await page.evaluate(() => {
+      const st = createInitialState();
+      applyDecision(st, 'RUN-1', { requestId:'R001', submissionId:'N1', state:'provisional_approval',
+        minutes:45, reason:'decided against the records of the day', alternative:'the partner conversation', actorRole:'t' });
+      const before = computeCapacity(st, 'RUN-1', 'A').reserved;
+      const snap = JSON.parse(JSON.stringify(getSources(st)));
+      snap.requests = snap.requests.filter(r => r.request_id !== 'R001');
+      st.sourceSnapshots.push({ snapshotId:'SNAP-WITHOUT-R001', importedAt:new Date().toISOString(),
+        label:'an import that does not contain R001', data:snap });
+      st.activeSnapshotId = 'SNAP-WITHOUT-R001';
+      const after = computeCapacity(st, 'RUN-1', 'A').reserved;
+      const orphans = getOrphanedDecisions(st, 'RUN-1');
+      return { before, after, orphans: orphans.length, minutes: orphans.length ? orphans[0].minutes : 0 };
+    });
+    rec.check('Importing records that drop a decided request does not quietly release its minutes',
+      stranded.before === 45 && stranded.after === 45 && stranded.orphans === 1 && stranded.minutes === 45,
+      'reserved ' + stranded.before + ' before the import and ' + stranded.after + ' after; ' +
+      stranded.orphans + ' decision surfaced as no longer matching the records, still holding ' + stranded.minutes + ' minutes');
+
+    /* ---- 16. effort figures that are not plain numbers ---- */
+    const effort = await page.evaluate(() => {
+      const e = { preparation:'5', assessment:'twelve', verification:'-4', correction:'', clarification:'3.5', logging:'1e2' };
+      return { total: effortTotal(e), refused: effortUnreadable(e).map(x => x.raw) };
+    });
+    rec.check('An effort figure that is not plain digits is refused rather than silently dropped',
+      effort.total === 5 && effort.refused.length === 4,
+      'total counted ' + effort.total + ' minutes; refused ' + JSON.stringify(effort.refused) +
+      ' — silently ignoring any of these would make a run look cheaper than it was');
+
+    /* ---- 17. a backdated policy change ---- */
+    const backdated = await page.evaluate(() => {
+      const st = createInitialState();
+      const before = getCurrentPriorityVersion(st).version;
+      const res = recordPolicyVersion(st, { version:'v0-old', effectiveDate:'2020-01-01', summary:'backdated', actorRole:'t' });
+      return { ok: res.ok, before, after: getCurrentPriorityVersion(st).version };
+    });
+    rec.check('A policy change dated before the one in force does not become the version in force',
+      backdated.ok && backdated.before === 'v3' && backdated.after === 'v3',
+      'recorded as a historical version; ' + backdated.after + ' is still what new decisions will use, and the interface now says so rather than claiming otherwise');
+
+    /* ---- 18. a question carries no flag nothing can set ---- */
+    const question = await page.evaluate(() => {
+      const st = createInitialState();
+      applyDecision(st, 'RUN-1', { requestId:'R001', submissionId:'Q1', state:'deferred', reason:'ask first',
+        owner:'O', reviewDate:'2026-10-01', needsClarification:true, clarification:'Q?',
+        clarificationOwner:'P', clarificationDue:'2026-10-02', actorRole:'t' });
+      const shape = st.runs['RUN-1'].decisions['R001'].clarification;
+      const openBefore = getUnresolvedWork(st, 'RUN-1').length;
+      applyDecision(st, 'RUN-1', { requestId:'R001', submissionId:'Q2', state:'declined', reason:'the answer came back', actorRole:'t' });
+      return { shape, openBefore, openAfter: getUnresolvedWork(st, 'RUN-1').length };
+    });
+    rec.check('A question carries no flag the application could never set, and closes when the next decision is recorded',
+      !('answered' in question.shape) && question.openBefore === 1 && question.openAfter === 0,
+      'the record is ' + JSON.stringify(question.shape) + '; open before the next decision ' +
+      question.openBefore + ', after ' + question.openAfter);
+
     rec.check('No uncaught errors under any of this',
       page.errors.length === 0 && hammer.errors.length === 0 && w1.errors.length === 0 && w2.errors.length === 0,
       [...page.errors, ...hammer.errors, ...w1.errors, ...w2.errors].join(' | ') || 'none');

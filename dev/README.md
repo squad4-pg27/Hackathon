@@ -78,7 +78,7 @@ file breaks and what the application should say about it.
 - They check **behaviour, not judgement**. Nothing here can tell you whether
   the fixtures read as realistic or whether the evidence key's judgements are
   the right ones. Those need a person.
-- A full pass is **not** a claim that the application is free of faults. **Twelve
+- A full pass is **not** a claim that the application is free of faults. **Seventeen
   faults have been found by these checks after the application was believed
   finished**, which is the point of having them.
 
@@ -104,7 +104,14 @@ Each one now has a permanent check, so it cannot come back unnoticed.
 | **Stress: older records** | A saved record from before the displacement and question-owner fields existed rendered as **"question for undefined by undefined"** |
 | **Stress: amending** | The displacement box was the only field not pre-filled when amending a decision, so an amendment invited a different answer about the same reservation |
 
-The last seven were found by `08-stress.js` and are the reason it exists.
+| **Bug hunt: changed records** | **Importing records that no longer contain a decided request silently released its reserved minutes.** 45 minutes vanished from capacity, and the decision survived but was invisible everywhere |
+| **Bug hunt: effort figures** | An effort entry of "twelve" was silently ignored, "-4" was subtracted and "1e2" read as 100 — silently making a run look cheaper than it was |
+| **Bug hunt: policy versions** | A policy change dated before the one in force was accepted and announced as though new decisions would use it. They would not |
+| **Bug hunt: assessor key** | A key written against a different set of records showed an empty table and a denominator of zero, with no indication that nothing matched |
+| **Bug hunt: dead flag** | A question carried an `answered` flag that nothing in the application could ever set |
+
+The last eleven were found by `08-stress.js` and the bug hunts behind it, and
+are the reason it exists.
 Two of the "failures" it reported first time were faults in the checks
 themselves, not the application — both are noted in the suite where they
 were corrected.
