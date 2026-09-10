@@ -2665,7 +2665,8 @@ var App = {
   saveMessage: '',
   corrupt: null,            /* { reason, raw } when stored data could not be read */
   lastNotice: null,
-  formDraft: null           /* { requestId, submissionId, state, minutes, reason } */
+  formDraft: null,          /* { requestId, submissionId, state, minutes, reason } */
+  ledgerAudit: null         /* { at, findings } from the last audit; see auditLedger */
 };
 
 /* Persist. Only a verified read-back is reported as saved.
@@ -2756,8 +2757,194 @@ function loadAtStart(){
 
 function notice(kind, title, body){ App.lastNotice = { kind:kind, title:title, body:body, at:nowIso() }; }
 
+/* ---------- Ledger audit -------------------------------------------- */
+
+/* Every round of bug-hunting so far has found real faults, and the ones that
+   mattered were all the same shape: minutes quietly stopped being accounted
+   for and nothing said so. An import that no longer contained a request
+   released the 45 minutes its decision still held. A duration read as
+   hexadecimal reserved 16 minutes for a 10-minute request.
+
+   This walks the recorded state after every rebuild and asserts the structural
+   properties that make such a silent loss impossible. It deliberately does not
+   add the reservations up a second time: recomputing the same total with the
+   same rule would only agree with itself and would prove nothing.
+
+   It is silent in the interface on purpose. It writes to the console, and to
+   window.__ledgerAudit so a development suite can read it, and it stays out of
+   the operator's way until it has been quiet through a full clean run. To show
+   it, render the findings held in App.ledgerAudit; nothing else needs to
+   change. Nothing in dev/ is required for it to run. */
+function auditLedger(){
+  var findings = [];
+  var state = App.state;
+  if (!state || !state.runs){
+    App.ledgerAudit = { at:nowIso(), findings:findings };
+    return findings;
+  }
+
+  for (var runId in state.runs){
+    var run = state.runs[runId];
+    if (!run) continue;
+    var decisions = run.decisions || {};
+    var promises = run.offRecordPromises || [];
+    var rid, i;
+
+    for (rid in decisions){
+      var d = decisions[rid];
+      if (!d) continue;
+      var where = runId + ' / ' + rid;
+      if (!STATES[d.state]){
+        findings.push(where + ': the recorded state "' + String(d.state) +
+          '" is not one of the agreed states, so what it reserves is undefined.');
+        continue;
+      }
+      if (!stateReserves(d.state)) continue;
+      /* A reserving decision has to carry its own batch. If it depends on the
+         request record still being there, importing a dataset without that
+         request releases minutes that were genuinely promised. */
+      if (!d.batch){
+        findings.push(where + ': reserves ' + String(d.minutes) +
+          ' minutes but records no batch of its own, so an import that dropped the request would release them silently.');
+      }
+      if (!isWholeMinutes(d.minutes)){
+        findings.push(where + ': reserves a duration of ' + JSON.stringify(d.minutes) +
+          ', which is not a whole number of minutes above zero.');
+      }
+    }
+
+    for (i = 0; i < promises.length; i++){
+      var p = promises[i];
+      if (!p || !p.active) continue;
+      var pw = runId + ' / promise ' + (p.promiseId || '#' + i);
+      if (!isWholeMinutes(p.minutes)){
+        findings.push(pw + ': records ' + JSON.stringify(p.minutes) +
+          ' minutes, which is not a whole number above zero.');
+      }
+      if (!p.batch){
+        findings.push(pw + ': records no batch, so its minutes belong to no capacity total.');
+      }
+      /* "Convert or link, never reserve twice": a linked promise contributes
+         nothing itself, which is only safe if the request it points at really
+         does hold the reservation, as binding, at the promise's minutes. */
+      if (p.linkedRequestId){
+        var linked = decisions[p.linkedRequestId];
+        if (!linked){
+          findings.push(pw + ': is linked to ' + p.linkedRequestId +
+            ', which has no decision in this run, so the promised minutes are reserved nowhere.');
+        } else if (linked.state !== 'binding'){
+          findings.push(pw + ': is linked to ' + p.linkedRequestId + ', which is ' + linked.state +
+            ' rather than binding, so the promised minutes are reserved nowhere.');
+        } else if (linked.minutes !== p.minutes){
+          findings.push(pw + ': promises ' + p.minutes +
+            ' minutes but the binding it is linked to holds ' + linked.minutes + '.');
+        }
+      }
+    }
+
+    /* Whatever the totals are made of, they have to come out as real numbers. */
+    var batches = {}, b;
+    for (rid in decisions) if (decisions[rid] && decisions[rid].batch) batches[decisions[rid].batch] = true;
+    for (i = 0; i < promises.length; i++) if (promises[i] && promises[i].batch) batches[promises[i].batch] = true;
+    for (b in batches){
+      var reserved = computeCapacity(state, runId, b).reserved;
+      if (typeof reserved !== 'number' || !isFinite(reserved) || reserved < 0){
+        findings.push(runId + ' / batch ' + b + ': the reserved total came out as ' +
+          String(reserved) + ', which cannot be right.');
+      }
+    }
+  }
+
+  App.ledgerAudit = { at:nowIso(), findings:findings };
+  try { window.__ledgerAudit = App.ledgerAudit; } catch (e){ /* nothing depends on this */ }
+  if (findings.length && window.console && console.warn){
+    console.warn('Time Ledger ledger audit — ' + findings.length + ' problem' +
+      (findings.length === 1 ? '' : 's') + ':\n- ' + findings.join('\n- '));
+  }
+  return findings;
+}
+
+function isWholeMinutes(v){
+  return typeof v === 'number' && isFinite(v) && v > 0 && Math.floor(v) === v;
+}
+
 /* ---------- 10. Rendering ------------------------------------------- */
+
+/* Every visible change goes through render(), which throws the whole page away
+   and builds it again. That costs only a few milliseconds, so speed is not the
+   problem — but it destroys and recreates every control on screen, and a
+   destroyed control takes the operator's place in the page with it. Marking one
+   assessor dropdown rebuilt every select on the page — 51 of them in the run
+   that was measured — dropped focus back to the document body and moved the
+   page 877 pixels, from 4170 to 3293. The assessor marks dozens in a row.
+
+   So render() is now a wrapper: note where the operator was, rebuild, put them
+   back. Controls are found again by id, because the element that held focus no
+   longer exists by the time anything is restored — which is why every control
+   that can hold focus is given a stable id where it is built. */
+function captureView(){
+  var active = document.activeElement;
+  var view = {
+    x: window.pageXOffset || document.documentElement.scrollLeft || 0,
+    y: window.pageYOffset || document.documentElement.scrollTop || 0,
+    id: (active && active.id) ? active.id : null,
+    selStart: null, selEnd: null, selDir: null
+  };
+  /* Where the cursor sat inside a text field, so a half-typed reason does not
+     jump to the end on the next keystroke that causes a rebuild. Some input
+     types refuse selection access and throw; the position is optional. */
+  if (view.id){
+    try {
+      if (typeof active.selectionStart === 'number'){
+        view.selStart = active.selectionStart;
+        view.selEnd = active.selectionEnd;
+        view.selDir = active.selectionDirection || 'none';
+      }
+    } catch (e){ /* position unavailable; restoring focus alone is still worth it */ }
+  }
+  return view;
+}
+
+function restoreView(view){
+  if (!view) return;
+  if (view.id){
+    var node = document.getElementById(view.id);
+    if (node && typeof node.focus === 'function'){
+      /* preventScroll matters here: focusing a control the browser considers
+         off-screen would scroll the page, which is the jump being fixed. Not
+         every browser honours the option, so the scroll position is put back
+         afterwards regardless. */
+      try { node.focus({ preventScroll:true }); }
+      catch (e){
+        try { node.focus(); } catch (e2){ /* control cannot take focus */ }
+      }
+      if (view.selStart !== null && typeof node.setSelectionRange === 'function'){
+        try { node.setSelectionRange(view.selStart, view.selEnd, view.selDir); }
+        catch (e){ /* field does not support a selection range */ }
+      }
+    }
+  }
+  window.scrollTo(view.x, view.y);
+}
+
+var renderInProgress = false;
+
 function render(){
+  /* A handler that rendered while a render was already running would capture a
+     half-built page and restore the wrong place. Nothing does that today; the
+     guard is here so that adding one later cannot quietly reintroduce the jump. */
+  if (renderInProgress){ renderAll(); return; }
+  renderInProgress = true;
+  var view = captureView();
+  try { renderAll(); }
+  finally {
+    renderInProgress = false;
+    restoreView(view);
+  }
+  auditLedger();
+}
+
+function renderAll(){
   renderAlerts();
   renderCapacity();
   renderMode();
@@ -5787,6 +5974,79 @@ function wire(){
   });
 }
 
+/* The drafts on this page are deliberately never written to storage: an
+   unfinished entry is not a record, and half a decision must not be restored as
+   though it were one. The cost is that a refresh or a closed tab takes them
+   with it, and a half-typed reason has nowhere to come back from.
+
+   So the operator is asked first. The browser supplies its own wording and will
+   only ask at all once the page has been interacted with, which is exactly when
+   there is something to lose. Nothing here saves anything; it only stops the
+   loss being silent. */
+function countTypedFields(draft, fields){
+  if (!draft) return 0;
+  var n = 0;
+  for (var i = 0; i < fields.length; i++){
+    var v = draft[fields[i]];
+    if (typeof v === 'string' && !isBlank(v)) n++;
+    else if (v === true) n++;
+  }
+  return n;
+}
+
+function countAssessorMarks(){
+  var n = 0, runId, rowKey, field, marks;
+  for (runId in (App.assessorMarks || {})){
+    for (rowKey in (App.assessorMarks[runId] || {})){
+      marks = App.assessorMarks[runId][rowKey] || {};
+      for (field in marks) if (marks[field]) n++;
+    }
+  }
+  for (runId in (App.assessorRunMarks || {})){
+    marks = App.assessorRunMarks[runId] || {};
+    for (field in marks) if (marks[field]) n++;
+  }
+  return n;
+}
+
+/* Only fields that start empty are counted. Minutes, owner and role are
+   prefilled from the request or the previous decision, so counting those would
+   warn on every single refresh and teach the operator to click straight past
+   the warning. */
+function unsavedWorkReasons(){
+  var reasons = [];
+  if (App.saveState === 'unsaved' || App.saveState === 'nostorage' ||
+      App.saveState === 'blocked' || App.saveState === 'conflict'){
+    reasons.push('recorded work that is not safely saved');
+  }
+  var typed = 0, key;
+  typed += countTypedFields(App.formDraft, ['state','reason','amendApprover','amendReason','exceptionReason','clarification','ackBy']);
+  typed += countTypedFields(App.identityDraft, ['contactId','basis']);
+  typed += countTypedFields(App.flagDraft, ['text']);
+  typed += countTypedFields(App.promiseDraft, ['promiseId','description','minutes']);
+  typed += countTypedFields(App.policyDraft, ['version','effectiveDate','summary']);
+  for (key in (App.outcomeDrafts || {})) typed += countTypedFields(App.outcomeDrafts[key], ['text']);
+  for (key in (App.releaseDrafts || {})) typed += countTypedFields(App.releaseDrafts[key], ['reason']);
+  if (typed) reasons.push(typed + (typed === 1 ? ' unfinished entry' : ' unfinished entries') + ' typed into a form but not yet recorded');
+
+  var marks = countAssessorMarks();
+  if (marks) reasons.push(plural(marks, 'assessor marking') + ' held only on this page');
+  return reasons;
+}
+
+function warnBeforeLosingDrafts(){
+  try {
+    window.addEventListener('beforeunload', function(e){
+      if (!unsavedWorkReasons().length) return undefined;
+      /* Browsers show their own generic message; the three forms below are what
+         the different ones actually look at. */
+      e.preventDefault();
+      e.returnValue = '';
+      return '';
+    });
+  } catch (e){ /* without this the drafts are still only lost on an actual refresh */ }
+}
+
 /* Best effort early warning: some browsers tell a page when another window
    writes to the same storage. Where they do not, the check before saving
    still catches it. */
@@ -5812,6 +6072,7 @@ function start(){
   if (!App.state.ui) App.state.ui = { batch:'A', selectedRequestId:null, role:'Executive assistant' };
   wire();
   watchForOtherWindows();
+  warnBeforeLosingDrafts();
   render();
 }
 start();

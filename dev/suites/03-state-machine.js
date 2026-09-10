@@ -198,6 +198,81 @@ module.exports = H.defineSuite(
     rec.check('All of it survives an actual reload',
       survived.promises === 2 && survived.decisions === 4 && survived.version === 'v4',
       survived.decisions + ' decisions, ' + survived.promises + ' promises, priority ' + survived.version + ', remaining ' + survived.remaining);
+    /* ---- the ledger audit ----
+       Every round of bug-hunting has found faults of one shape: minutes
+       quietly stopped being accounted for and nothing said so. The audit
+       asserts the structural properties that make that impossible. A check
+       that it stays quiet proves nothing on its own, so each property is also
+       broken on purpose here and the audit has to catch it. The state is a
+       fully exercised ledger by this point: four decisions and two promises. */
+    const audit = await page.evaluate(() => {
+      const snapshot = JSON.stringify(App.state);
+      const run = App.state.runs[App.state.activeRunId];
+      const out = { clean: auditLedger().slice() };
+
+      const reservingId = Object.keys(run.decisions).find(id => stateReserves(run.decisions[id].state));
+      out.reservingId = reservingId || null;
+
+      if (reservingId){
+        const d = run.decisions[reservingId];
+        const keptBatch = d.batch;
+        delete d.batch;
+        out.noBatch = auditLedger().slice();
+        d.batch = keptBatch;
+
+        const keptMinutes = d.minutes;
+        d.minutes = 16.5;
+        out.badMinutes = auditLedger().slice();
+        d.minutes = keptMinutes;
+
+        const keptState = d.state;
+        d.state = 'approved_probably';
+        out.unknownState = auditLedger().slice();
+        d.state = keptState;
+      }
+
+      const linked = run.offRecordPromises.filter(p => p.active && p.linkedRequestId)[0];
+      out.hadLinkedPromise = !!linked;
+      if (linked && run.decisions[linked.linkedRequestId]){
+        const target = run.decisions[linked.linkedRequestId];
+        const keptState = target.state;
+        target.state = 'deferred';
+        out.brokenLink = auditLedger().slice();
+        target.state = keptState;
+      }
+
+      App.state = JSON.parse(snapshot);
+      out.restored = auditLedger().slice();
+      render();
+      return out;
+    });
+
+    rec.check('The ledger audit stays silent on a ledger that is behaving',
+      audit.clean.length === 0 && audit.restored.length === 0,
+      'nothing reported across four decisions and two promises, before or after the deliberate breakages' +
+      (audit.clean.length ? ' — but it said: ' + audit.clean.join(' | ') : ''));
+
+    rec.check('The ledger audit catches a reservation an import could release silently',
+      !!audit.noBatch && audit.noBatch.some(f => /records no batch of its own/.test(f)),
+      (audit.noBatch || []).join(' | ') || 'nothing reported');
+
+    rec.check('The ledger audit catches a duration that is not whole minutes',
+      !!audit.badMinutes && audit.badMinutes.some(f => /not a whole number of minutes/.test(f)),
+      (audit.badMinutes || []).join(' | ') || 'nothing reported');
+
+    rec.check('The ledger audit catches a state that is not one of the agreed states',
+      !!audit.unknownState && audit.unknownState.some(f => /is not one of the agreed states/.test(f)),
+      (audit.unknownState || []).join(' | ') || 'nothing reported');
+
+    if (audit.hadLinkedPromise){
+      rec.check('The ledger audit catches a linked promise whose minutes are reserved nowhere',
+        !!audit.brokenLink && audit.brokenLink.some(f => /reserved nowhere/.test(f)),
+        (audit.brokenLink || []).join(' | ') || 'nothing reported');
+    } else {
+      rec.note('The ledger audit catches a linked promise whose minutes are reserved nowhere',
+        'NOT IMPLEMENTED', 'this scenario ends with no active linked promise to break');
+    }
+
     rec.check('No uncaught errors', page.errors.length === 0, page.errors.join(' | ') || 'none');
   }
 );

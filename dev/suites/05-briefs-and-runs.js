@@ -288,6 +288,33 @@ module.exports = H.defineSuite(
       /1 of \d+ key rows fully marked/.test(await page.textContent('#assessorBody')),
       (await page.textContent('#assessorBody')).match(/\d+ of \d+ key rows fully marked/)[0]);
 
+    /* Marking a dropdown rebuilds the whole page, which destroys and recreates
+       every select on it. Before render() preserved the operator's place, that
+       threw focus back to the document body and moved the page by hundreds of
+       pixels on every single mark — and the assessor marks dozens of them in a
+       row. This is the check that would have caught it. */
+    await A.openAllPanels(page);
+    const allMarkIds = await page.$$eval('#assessorBody select[id^=mark_]', n => n.map(x => x.id));
+    const deepMark = allMarkIds[allMarkIds.length - 1];
+    await page.focus('#' + deepMark);
+    const markBefore = await page.evaluate(() => ({
+      y: Math.round(window.pageYOffset),
+      id: document.activeElement && document.activeElement.id,
+      selects: document.querySelectorAll('select').length
+    }));
+    await page.selectOption('#' + deepMark, 'unclear');
+    await page.waitForTimeout(200);
+    const markAfter = await page.evaluate(() => ({
+      y: Math.round(window.pageYOffset),
+      id: document.activeElement && document.activeElement.id,
+      value: document.getElementById(document.activeElement.id) ? document.activeElement.value : null
+    }));
+    rec.check('Marking one dropdown keeps the page still and keeps focus on that dropdown',
+      Math.abs(markAfter.y - markBefore.y) <= 2 && markAfter.id === deepMark && markAfter.value === 'unclear',
+      markBefore.selects + ' selects on screen; scroll ' + markBefore.y + ' -> ' + markAfter.y +
+      ', focus ' + (markBefore.id || '(none)') + ' -> ' + (markAfter.id || '(none)') +
+      ', value now ' + markAfter.value);
+
     const [assessCsv] = await Promise.all([
       page.waitForEvent('download', { timeout: 8000 }),
       page.click('#btnAssessCsv')

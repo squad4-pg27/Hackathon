@@ -104,9 +104,30 @@ module.exports = H.defineSuite(
       /minutes short/.test(blocked.formErrors) && await A.remaining(page) === 15,
       (blocked.formErrors.match(/This reserves[^.]*\./) || ['none'])[0]);
 
+    /* The refused decision above left a typed reason on screen. Drafts are
+       deliberately never written to storage, so a refresh here would throw that
+       reason away; the operator has to be asked first. The reason is still in
+       the form at this point, which is exactly the situation being guarded. */
+    const pendingLoss = await page.evaluate(() => ({
+      reasons: unsavedWorkReasons(),
+      reasonStillTyped: (document.getElementById('reasonIn') || {}).value || ''
+    }));
+    rec.check('An unfinished reason left in the form counts as work that would be lost',
+      pendingLoss.reasons.length > 0 && /unfinished entr/.test(pendingLoss.reasons.join('; ')),
+      'reason still on screen: "' + pendingLoss.reasonStillTyped.slice(0, 40) +
+      '"; would warn about ' + (pendingLoss.reasons.join('; ') || 'nothing'));
+
+    const promptsBeforeReload = page.beforeUnloadPrompts;
+
     /* 7 — an actual reload */
     await page.reload();
     await page.waitForTimeout(400);
+
+    rec.check('Refreshing with an unfinished entry asks before discarding it',
+      page.beforeUnloadPrompts > promptsBeforeReload,
+      'the browser raised ' + (page.beforeUnloadPrompts - promptsBeforeReload) +
+      ' prompt before unloading; the test accepted it, which is the operator choosing to leave');
+
     const afterReload = await A.remaining(page);
     const banner = (await page.textContent('#alertRegion')).replace(/\s+/g, ' ').trim();
     if (storageWorks){
@@ -116,6 +137,22 @@ module.exports = H.defineSuite(
     } else {
       rec.note('7. Recovering work after an actual browser reload', 'UNVERIFIED',
         'this browser reported that it is not saving work for a file:// page, so recovery cannot be expected here. Observed after reload: ' + await A.capacityText(page));
+    }
+
+    /* The warning is only worth having if it stays quiet when there is nothing
+       to lose. A guard that fires on every refresh teaches the operator to
+       click straight past it. */
+    if (storageWorks){
+      const cleanReasons = await page.evaluate(() => unsavedWorkReasons());
+      const promptsBeforeCleanReload = page.beforeUnloadPrompts;
+      await page.reload();
+      await page.waitForTimeout(350);
+      rec.check('Refreshing with nothing unfinished does not ask at all',
+        cleanReasons.length === 0 && page.beforeUnloadPrompts === promptsBeforeCleanReload,
+        'nothing outstanding after the reload, and no prompt was raised on a second refresh');
+    } else {
+      rec.note('Refreshing with nothing unfinished does not ask at all', 'UNVERIFIED',
+        'this browser is not saving work for a file:// page, so the page never reaches a state with nothing outstanding');
     }
 
     /* 8 — backup, reset, restore */

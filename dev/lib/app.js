@@ -14,8 +14,24 @@ async function openApp(context, { url = APP_URL } = {}){
   const page = await context.newPage();
   page.errors = [];
   page.dialogs = [];
+  page.beforeUnloadPrompts = 0;
   page.on('pageerror', e => page.errors.push(e.message));
-  page.on('dialog', async d => { page.dialogs.push(d.message()); await d.dismiss(); });
+  page.on('dialog', async d => {
+    /* A beforeunload prompt is the application asking before a refresh discards
+       drafts it deliberately never saved. Dismissing one means "stay on this
+       page", which would hang every reload check, so it is accepted instead:
+       that is the operator choosing to leave. It is counted separately rather
+       than pushed onto page.dialogs, because the checks that assert no dialogs
+       were raised are about scripts executing and about clicking every control,
+       and a deliberate save prompt is neither. */
+    if (d.type() === 'beforeunload'){
+      page.beforeUnloadPrompts++;
+      await d.accept().catch(() => {});
+      return;
+    }
+    page.dialogs.push(d.message());
+    await d.dismiss().catch(() => {});
+  });
   await page.goto(url);
   await page.waitForTimeout(300);
   return page;
